@@ -16,7 +16,7 @@ const busy = computed(
 <template>
   <div class="shell">
     <header class="hero animate-fade-up">
-      <p class="brand">Roommate</p>
+      <p class="brand">Roommate-LAN</p>
       <p class="tagline">一键进入虚拟局域网，Steam 联机少卡顿</p>
     </header>
 

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Roommate",
+  "productName": "Roommate-LAN",
   "version": "0.1.0",
   "identifier": "com.wonderland.roommate",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Roommate",
+        "title": "Roommate-LAN",
         "width": 420,
         "height": 640,
         "resizable": false,

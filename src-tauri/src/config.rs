@@ -82,7 +82,7 @@ pub fn auth_key() -> String {
 pub fn state_dir() -> std::path::PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("Roommate")
+        .join("Roommate-LAN")
         .join("tailscale")
 }
 
