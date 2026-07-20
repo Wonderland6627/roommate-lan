@@ -1,0 +1,55 @@
+# Headscale config for Roommate control plane.
+# Replace hs.example.com with your real HS_DOMAIN before first start.
+
+server_url: https://hs.example.com
+
+listen_addr: 0.0.0.0:8080
+metrics_listen_addr: 127.0.0.1:9090
+
+grpc_listen_addr: 127.0.0.1:50443
+grpc_allow_insecure: false
+
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key
+
+prefixes:
+  v4: 100.64.0.0/24
+  v6: fd7a:115c:a1e0::/48
+
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+
+# Disable built-in / public DERP map; only use our Tencent Cloud region.
+derp:
+  server:
+    enabled: false
+  urls: []
+  paths:
+    - /etc/headscale/derp.yaml
+  auto_update_enabled: false
+  update_frequency: 24h
+
+# Ephemeral nodes expire after disconnect (optional; set 0 to disable).
+ephemeral_node_inactivity_timeout: 30m
+
+dns:
+  magic_dns: false
+  # 不可与 server_url 主机名有包含关系（例如 server_url 含 roommate.lan 时不能再用 roommate.lan）
+  base_domain: roommate.internal
+  nameservers:
+    global: []
+  search_domains: []
+  extra_records: []
+
+unix_socket: /var/run/headscale/headscale.sock
+unix_socket_permission: "0770"
+
+log:
+  level: info
+  format: text
+
+policy:
+  mode: file
+  path: /etc/headscale/acl.hujson

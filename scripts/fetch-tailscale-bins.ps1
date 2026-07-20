@@ -1,0 +1,63 @@
+#Requires -Version 5.1
+<#
+.SYNOPSIS
+  Download Tailscale Windows binaries and rename for Tauri externalBin.
+
+.DESCRIPTION
+  Fetches the official Tailscale MSI, extracts tailscale.exe / tailscaled.exe,
+  and places them under src-tauri/binaries/ with the Rust target-triple suffix.
+#>
+param(
+  [string]$Version = "1.82.0",
+  [string]$OutDir = ""
+)
+
+$ErrorActionPreference = "Stop"
+
+$Root = Split-Path -Parent $PSScriptRoot
+if (-not $OutDir) {
+  $OutDir = Join-Path $Root "src-tauri\binaries"
+}
+
+$Triple = "x86_64-pc-windows-msvc"
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+
+$Work = Join-Path $env:TEMP "roommate-tailscale-$Version"
+if (Test-Path $Work) { Remove-Item -Recurse -Force $Work }
+New-Item -ItemType Directory -Force -Path $Work | Out-Null
+
+$MsiUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-$Version-amd64.msi"
+$MsiPath = Join-Path $Work "tailscale.msi"
+$Extract = Join-Path $Work "extract"
+
+Write-Host "Downloading $MsiUrl ..."
+Invoke-WebRequest -Uri $MsiUrl -OutFile $MsiPath -UseBasicParsing
+
+Write-Host "Extracting MSI (administrative install) ..."
+New-Item -ItemType Directory -Force -Path $Extract | Out-Null
+$p = Start-Process -FilePath "msiexec.exe" -ArgumentList @(
+  "/a", "`"$MsiPath`"",
+  "/qn",
+  "TARGETDIR=`"$Extract`""
+) -Wait -PassThru
+if ($p.ExitCode -ne 0) {
+  throw "msiexec failed with exit $($p.ExitCode)"
+}
+
+$found = Get-ChildItem -Path $Extract -Recurse -Include "tailscale.exe", "tailscaled.exe" -ErrorAction SilentlyContinue
+$ts = $found | Where-Object { $_.Name -eq "tailscale.exe" } | Select-Object -First 1
+$td = $found | Where-Object { $_.Name -eq "tailscaled.exe" } | Select-Object -First 1
+
+if (-not $ts -or -not $td) {
+  throw "Could not find tailscale.exe / tailscaled.exe inside MSI extract tree under $Extract"
+}
+
+$destTs = Join-Path $OutDir "tailscale-$Triple.exe"
+$destTd = Join-Path $OutDir "tailscaled-$Triple.exe"
+Copy-Item -Force $ts.FullName $destTs
+Copy-Item -Force $td.FullName $destTd
+
+Write-Host "Wrote:"
+Write-Host "  $destTs"
+Write-Host "  $destTd"
+Write-Host "Done. Sidecar version pinned: $Version"

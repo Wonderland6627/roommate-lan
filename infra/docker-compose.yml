@@ -1,0 +1,77 @@
+services:
+  headscale:
+    image: ${HEADSCALE_IMAGE:-headscale/headscale:0.23.0}
+    container_name: roommate-headscale
+    command: serve
+    restart: unless-stopped
+    volumes:
+      - ./headscale/config.yaml:/etc/headscale/config.yaml:ro
+      - ./headscale/derp.yaml:/etc/headscale/derp.yaml:ro
+      - ./headscale/acl.hujson:/etc/headscale/acl.hujson:ro
+      - headscale-data:/var/lib/headscale
+      - headscale-run:/var/run/headscale
+    expose:
+      - "8080"
+      - "9090"
+    networks:
+      - roommate-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: roommate-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      HS_DOMAIN: ${HS_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - headscale
+    networks:
+      - roommate-net
+
+  # DERP listens on host 8443 (HTTPS) + 3478/UDP (STUN) so it does not
+  # conflict with Caddy on 443. Point derp.yaml derpport at 8443, or put
+  # DERP on a second IP / SNI passthrough if you need 443 for DERP.
+  # 使用 Docker Hub 镜像；官方 ghcr.io/tailscale/derper 在国内常报 denied
+  derper:
+    image: ${DERPER_IMAGE:-fredliang/derper:latest}
+    container_name: roommate-derper
+    restart: unless-stopped
+    environment:
+      DERP_DOMAIN: ${DERP_DOMAIN}
+      DERP_CERT_MODE: manual
+      DERP_CERT_DIR: /app/certs
+      DERP_ADDR: ":443"
+      DERP_HTTP_PORT: "-1"
+      DERP_STUN: "true"
+      DERP_STUN_PORT: "3478"
+      DERP_VERIFY_CLIENTS: "false"
+    volumes:
+      - ./derper/certs:/app/certs:ro
+    ports:
+      - "8443:443"
+      - "3478:3478/udp"
+    networks:
+      - roommate-net
+
+volumes:
+  headscale-data:
+  headscale-run:
+  caddy-data:
+  caddy-config:
+
+networks:
+  roommate-net:
+    driver: bridge

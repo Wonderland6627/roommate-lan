@@ -1,0 +1,47 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Rust / Tauri
+src-tauri/target
+src-tauri/gen
+
+# Sidecar binaries (fetch via scripts/fetch-tailscale-bins.ps1)
+src-tauri/binaries/*.exe
+!src-tauri/binaries/.gitkeep
+
+# Secrets / local env
+.env
+.env.*
+!.env.example
+infra/.env
+infra/derper/certs/*.crt
+infra/derper/certs/*.key
+!infra/derper/certs/.gitkeep
+
+# OS
+Thumbs.db
+
+# Accidental npm output
+/src-tauri/2

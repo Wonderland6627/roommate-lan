@@ -1,0 +1,14 @@
+# 宝塔环境覆盖配置：停用 Caddy，把 Headscale 只绑本机 8080，
+# 由宝塔 Nginx 做 HTTPS 反代。与 docker-compose.yml 一起使用：
+#
+#   docker compose -f docker-compose.yml -f docker-compose.baota.yml up -d
+#
+
+services:
+  caddy:
+    profiles:
+      - never  # 不启动，避免与宝塔抢 80/443
+
+  headscale:
+    ports:
+      - "127.0.0.1:8080:8080"

@@ -1,0 +1,18 @@
+# Custom DERP map — Tencent Cloud BGP relay for Roommate.
+# hostname / ports must match docker-compose derper publish mapping.
+# RegionID 900 avoids collision with Tailscale public regions.
+
+regions:
+  900:
+    regionid: 900
+    regioncode: txy
+    regionname: Roommate Tencent Cloud
+    nodes:
+      - name: 900a
+        regionid: 900
+        hostname: derp.example.com
+        ipv4: ""
+        ipv6: ""
+        stunport: 3478
+        derpport: 8443
+        stunonly: false

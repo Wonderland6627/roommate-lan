@@ -1,0 +1,12 @@
+{
+  "groups": {
+    "group:roommate": ["roommate@"]
+  },
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["*"],
+      "dst": ["*:*"]
+    }
+  ]
+}

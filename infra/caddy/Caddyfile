@@ -1,0 +1,16 @@
+{
+  {$HS_DOMAIN:hs.example.com} {
+    email {$ACME_EMAIL:admin@example.com}
+
+    encode gzip
+
+    reverse_proxy headscale:8080 {
+      # Headscale noise / websocket upgrade
+      header_up Host {host}
+      header_up X-Real-IP {remote}
+      header_up X-Forwarded-For {remote}
+      header_up X-Forwarded-Proto {scheme}
+      flush_interval -1
+    }
+  }
+}
