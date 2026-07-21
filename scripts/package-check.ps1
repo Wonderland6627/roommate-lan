@@ -6,19 +6,32 @@
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 $Bundle = Join-Path $Root "src-tauri\target\release\bundle"
+$NsisDir = Join-Path $Bundle "nsis"
 
 if (-not (Test-Path $Bundle)) {
   Write-Error "Bundle folder missing: $Bundle — run npm run tauri build first."
 }
 
 Write-Host "Scanning $Bundle ..."
-$nsis = Get-ChildItem -Path $Bundle -Recurse -Filter "*.exe" -ErrorAction SilentlyContinue
+
+if (-not (Test-Path $NsisDir)) {
+  Write-Error "NSIS folder missing: $NsisDir"
+}
+
+$nsis = Get-ChildItem -Path $NsisDir -Filter "*-setup.exe" -ErrorAction SilentlyContinue |
+  Where-Object { $_.Name -notlike "*.sig" }
 if (-not $nsis) {
-  Write-Error "No NSIS/exe artifacts found under bundle/"
+  Write-Error "No NSIS setup.exe artifacts found under $NsisDir"
 }
 
 $nsis | ForEach-Object {
   Write-Host ("OK artifact: {0} ({1:N1} MB)" -f $_.FullName, ($_.Length / 1MB))
+  $sig = "$($_.FullName).sig"
+  if (Test-Path $sig) {
+    Write-Host "OK signature: $sig"
+  } else {
+    Write-Warning "Updater signature missing: $sig (set TAURI_SIGNING_PRIVATE_KEY when building releases)"
+  }
 }
 
 $releaseDir = Join-Path $Root "src-tauri\target\release"
@@ -34,11 +47,7 @@ if ($sidecars.Count -lt 2) {
 $wintun = Get-ChildItem -Path $releaseDir -Filter "wintun.dll" -ErrorAction SilentlyContinue |
   Select-Object -First 1
 if (-not $wintun) {
-  $wintun = Get-ChildItem -Path (Join-Path $Root "src-tauri\binaries") -Filter "wintun.dll" -ErrorAction SilentlyContinue |
-    Select-Object -First 1
-}
-if (-not $wintun) {
-  Write-Error "wintun.dll missing — run npm run fetch-bins and ensure bundle.resources includes it."
+  Write-Error "wintun.dll missing from release output — ensure bundle.resources includes it and rebuild."
 }
 Write-Host "OK wintun: $($wintun.FullName)"
 

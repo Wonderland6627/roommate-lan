@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Roommate-LAN",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "identifier": "com.wonderland.roommate",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -27,6 +27,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
     "externalBin": ["binaries/tailscale", "binaries/tailscaled"],
     "resources": ["binaries/wintun.dll", "../THIRD_PARTY_NOTICES.txt"],
     "icon": [
@@ -40,6 +41,17 @@
       "nsis": {
         "installMode": "perMachine",
         "installerHooks": "./windows/hooks.nsh"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhFOTVCNzA3QUFDQ0NEQjgKUldTNHpjeXFCN2VWamt0czlkaWRndUo2ZzhPTmthWWYwdXFHSTFFdTRoNkxEcSs2L3BiR3VPcTUK",
+      "endpoints": [
+        "https://github.com/Wonderland6627/roommate-lan/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

@@ -41,6 +41,12 @@ infra/derper/certs/*.crt
 infra/derper/certs/*.key
 !infra/derper/certs/.gitkeep
 
+# Tauri updater private keys (public key lives in tauri.conf.json)
+src-tauri/keys/*.key
+!src-tauri/keys/.gitkeep
+!src-tauri/keys/*.key.pub
+!src-tauri/keys/README.md
+
 # OS
 Thumbs.db
 

@@ -29,18 +29,23 @@
 ## 打包
 
 ```powershell
+npm run version:check
 npm run fetch-bins
 npm run tauri build
 npm run package-check
 ```
 
-产物：`src-tauri/target/release/bundle/nsis/`
+产物：`src-tauri/target/release/bundle/nsis/`（含 `*-setup.exe`；正式发版还应有 `.sig` 与 `latest.json`）
+
+**GitHub Release：** 推送 `vX.Y.Z` 标签触发 [`.github/workflows/release.yml`](../.github/workflows/release.yml)。公开包不内嵌 `ROOMMATE_AUTH_KEY`。
 
 **门禁：**
 
 1. 全新 Windows 安装 NSIS：**仅安装时**出现一次 UAC；重启后 `RoommateNetworkService` 自动 RUNNING。
 2. 普通用户启动 App 一键连接：无 UAC、无窗口重启/闪烁，拿到 `100.64.0.0/24` IP。
 3. 覆盖升级 / 卸载后无残留服务、进程、Roommate 网卡。
+4. 应用内「检查更新」能发现新版、下载签名包并完成安装重启（升级时可能再弹 UAC）。
+5. 底部版本号与 `tauri.conf.json` / Git tag 一致。
 
 ## Steam Listen 冒烟
 

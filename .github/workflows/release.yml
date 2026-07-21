@@ -1,0 +1,116 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      ROOMMATE_PUBLIC_RELEASE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag and versions
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if ($tag -notmatch '^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
+            throw "Invalid release tag '$tag' (expected vX.Y.Z or vX.Y.Z-prerelease)"
+          }
+          powershell -ExecutionPolicy Bypass -File .\scripts\version.ps1 -Check -ExpectTag $tag
+
+          git fetch origin master --depth=1 2>$null
+          git merge-base --is-ancestor HEAD origin/master
+          if ($LASTEXITCODE -ne 0) {
+            throw "Tag commit is not reachable from origin/master."
+          }
+          Write-Host "Tag commit is reachable from origin/master."
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Fetch Tailscale sidecars
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy Bypass -File .\scripts\fetch-tailscale-bins.ps1
+
+      - name: Rust tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Build and publish (draft)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          ROOMMATE_LOGIN_SERVER: ${{ secrets.ROOMMATE_LOGIN_SERVER }}
+          ROOMMATE_PUBLIC_RELEASE: "1"
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Roommate-LAN ${{ github.ref_name }}
+          releaseBody: |
+            ## Roommate-LAN ${{ github.ref_name }}
+
+            Windows x64 NSIS installer + signed updater artifacts.
+
+            **Note:** Public builds do not embed `ROOMMATE_AUTH_KEY`. Place a local `.env` next to the install (or use a future device-auth flow) to connect.
+          releaseDraft: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          updaterJsonPreferNsis: true
+          args: --bundles nsis
+
+      - name: Package check
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy Bypass -File .\scripts\package-check.ps1
+
+      - name: Attach SHA-256 checksums and publish
+        shell: pwsh
+        run: |
+          $nsis = Join-Path $PWD "src-tauri\target\release\bundle\nsis"
+          $files = Get-ChildItem -Path $nsis -File | Where-Object {
+            $_.Name -like "*-setup.exe" -or $_.Name -like "*.sig" -or $_.Name -eq "latest.json"
+          }
+          if (-not $files) { throw "No release assets found under $nsis" }
+
+          $checksumPath = Join-Path $nsis "SHA256SUMS.txt"
+          $lines = foreach ($f in $files) {
+            $hash = (Get-FileHash -Algorithm SHA256 -Path $f.FullName).Hash.ToLowerInvariant()
+            "{0}  {1}" -f $hash, $f.Name
+          }
+          Set-Content -Path $checksumPath -Value $lines -Encoding ascii
+          Get-Content $checksumPath
+
+          gh release upload "${{ github.ref_name }}" $checksumPath --clobber
+          gh release edit "${{ github.ref_name }}" --draft=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -10,10 +10,18 @@
 #>
 param(
   [string]$Version = "1.82.0",
-  [string]$OutDir = ""
+  [string]$OutDir = "",
+  # Override pinned hash if needed. Empty uses KnownHashes[$Version].
+  [string]$ExpectedSha256 = "",
+  [switch]$SkipHashCheck
 )
 
 $ErrorActionPreference = "Stop"
+
+# Verified MSI hashes (amd64). Update this map when bumping -Version.
+$KnownHashes = @{
+  "1.82.0" = "32B8AD3CA2202D090BEBE8E2D8108BCDD8C9371D4840EBF7C03288A9AF133715"
+}
 
 $Root = Split-Path -Parent $PSScriptRoot
 if (-not $OutDir) {
@@ -33,6 +41,29 @@ $Extract = Join-Path $Work "extract"
 
 Write-Host "Downloading $MsiUrl ..."
 Invoke-WebRequest -Uri $MsiUrl -OutFile $MsiPath -UseBasicParsing
+
+$hash = (Get-FileHash -Algorithm SHA256 -Path $MsiPath).Hash.ToUpperInvariant()
+Write-Host "MSI SHA-256: $hash"
+
+$expected = if ($ExpectedSha256) {
+  $ExpectedSha256.ToUpperInvariant()
+} elseif ($KnownHashes.ContainsKey($Version)) {
+  $KnownHashes[$Version].ToUpperInvariant()
+} else {
+  ""
+}
+
+if (-not $SkipHashCheck) {
+  if ([string]::IsNullOrWhiteSpace($expected)) {
+    throw "No pinned SHA-256 for Tailscale $Version. Pass -ExpectedSha256 or update KnownHashes."
+  }
+  if ($hash -ne $expected) {
+    throw "Tailscale MSI hash mismatch for $Version. Expected $expected, got $hash"
+  }
+  Write-Host "MSI hash verified."
+} else {
+  Write-Warning "SkipHashCheck enabled — not verifying MSI integrity."
+}
 
 Write-Host "Extracting MSI (administrative install) ..."
 New-Item -ItemType Directory -Force -Path $Extract | Out-Null

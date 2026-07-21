@@ -3,6 +3,7 @@ import { computed } from "vue";
 import ConnectButton from "./components/ConnectButton.vue";
 import PeerList from "./components/PeerList.vue";
 import StatusBar from "./components/StatusBar.vue";
+import UpdateStatus from "./components/UpdateStatus.vue";
 import { useNetworkStatus } from "./composables/useNetworkStatus";
 
 const { phase, error, status, isAdmin, connect, disconnect, peerLatency } =
@@ -47,6 +48,8 @@ const busy = computed(
       :peers="status?.peers ?? []"
       :latency-of="peerLatency"
     />
+
+    <UpdateStatus class="animate-fade-up" style="animation-delay: 0.2s" />
   </div>
 </template>
 
