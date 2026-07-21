@@ -18,9 +18,9 @@ if (-not (Test-Path $NsisDir)) {
   Write-Error "NSIS folder missing: $NsisDir"
 }
 
-$nsis = Get-ChildItem -Path $NsisDir -Filter "*-setup.exe" -ErrorAction SilentlyContinue |
-  Where-Object { $_.Name -notlike "*.sig" }
-if (-not $nsis) {
+$nsis = @(Get-ChildItem -Path $NsisDir -Filter "*-setup.exe" -ErrorAction SilentlyContinue |
+  Where-Object { $_.Name -notlike "*.sig" })
+if ($nsis.Count -lt 1) {
   Write-Error "No NSIS setup.exe artifacts found under $NsisDir"
 }
 
@@ -44,12 +44,31 @@ if ($sidecars.Count -lt 2) {
   $sidecars | ForEach-Object { Write-Host "OK sidecar: $($_.Name)" }
 }
 
-$wintun = Get-ChildItem -Path $releaseDir -Filter "wintun.dll" -ErrorAction SilentlyContinue |
+# wintun.dll is bundle.resources (path preserved as binaries/wintun.dll).
+# Unlike externalBin, Tauri does not necessarily copy it next to roommate.exe in target/release.
+$binWintun = Join-Path $Root "src-tauri\binaries\wintun.dll"
+$wintunRelease = Get-ChildItem -Path $releaseDir -Filter "wintun.dll" -Recurse -Depth 3 -ErrorAction SilentlyContinue |
   Select-Object -First 1
-if (-not $wintun) {
-  Write-Error "wintun.dll missing from release output - ensure bundle.resources includes it and rebuild."
+
+if ($wintunRelease) {
+  Write-Host "OK wintun (release tree): $($wintunRelease.FullName)"
+} elseif (Test-Path $binWintun) {
+  $confPath = Join-Path $Root "src-tauri\tauri.conf.json"
+  $conf = Get-Content -Raw -Path $confPath
+  if ($conf -notmatch 'binaries/wintun\.dll') {
+    Write-Error "wintun.dll exists but is not listed in tauri.conf.json resources"
+  }
+
+  # Prove the NSIS installer embeds wintun.dll (resources land in the package).
+  $setup = $nsis | Select-Object -First 1
+  $ascii = [Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($setup.FullName))
+  if ($ascii -notlike "*wintun.dll*") {
+    Write-Error "wintun.dll not found inside NSIS installer: $($setup.FullName)"
+  }
+  Write-Host "OK wintun (resource input + embedded in setup): $binWintun"
+} else {
+  Write-Error "wintun.dll missing - run npm run fetch-bins and ensure bundle.resources includes it."
 }
-Write-Host "OK wintun: $($wintun.FullName)"
 
 $hooks = Join-Path $Root "src-tauri\windows\hooks.nsh"
 if (-not (Test-Path $hooks)) {
