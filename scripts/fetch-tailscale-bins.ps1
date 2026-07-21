@@ -4,8 +4,9 @@
   Download Tailscale Windows binaries and rename for Tauri externalBin.
 
 .DESCRIPTION
-  Fetches the official Tailscale MSI, extracts tailscale.exe / tailscaled.exe,
-  and places them under src-tauri/binaries/ with the Rust target-triple suffix.
+  Fetches the official Tailscale MSI, extracts tailscale.exe / tailscaled.exe /
+  wintun.dll, and places them under src-tauri/binaries/ with the Rust
+  target-triple suffix (exe) or plain name (wintun.dll).
 #>
 param(
   [string]$Version = "1.82.0",
@@ -44,20 +45,27 @@ if ($p.ExitCode -ne 0) {
   throw "msiexec failed with exit $($p.ExitCode)"
 }
 
-$found = Get-ChildItem -Path $Extract -Recurse -Include "tailscale.exe", "tailscaled.exe" -ErrorAction SilentlyContinue
+$found = Get-ChildItem -Path $Extract -Recurse -Include "tailscale.exe", "tailscaled.exe", "wintun.dll" -ErrorAction SilentlyContinue
 $ts = $found | Where-Object { $_.Name -eq "tailscale.exe" } | Select-Object -First 1
 $td = $found | Where-Object { $_.Name -eq "tailscaled.exe" } | Select-Object -First 1
+$wt = $found | Where-Object { $_.Name -eq "wintun.dll" } | Select-Object -First 1
 
 if (-not $ts -or -not $td) {
   throw "Could not find tailscale.exe / tailscaled.exe inside MSI extract tree under $Extract"
 }
+if (-not $wt) {
+  throw "Could not find wintun.dll inside MSI extract tree under $Extract"
+}
 
 $destTs = Join-Path $OutDir "tailscale-$Triple.exe"
 $destTd = Join-Path $OutDir "tailscaled-$Triple.exe"
+$destWt = Join-Path $OutDir "wintun.dll"
 Copy-Item -Force $ts.FullName $destTs
 Copy-Item -Force $td.FullName $destTd
+Copy-Item -Force $wt.FullName $destWt
 
 Write-Host "Wrote:"
 Write-Host "  $destTs"
 Write-Host "  $destTd"
+Write-Host "  $destWt"
 Write-Host "Done. Sidecar version pinned: $Version"

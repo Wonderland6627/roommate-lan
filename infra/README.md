@@ -36,7 +36,8 @@ DERP 仍直连主机 `:8443`（证书由宝塔申请后拷入 `derper/certs/`）
 
 ```bash
 curl -I "https://${HS_DOMAIN}/health"
-# 在两台 Windows 电脑上使用官方 Tailscale CLI：
+# 推荐：用 Roommate 客户端一键连接（内置 sidecar，无需官方 Tailscale）
+# 或手动用 CLI 指向同一 Headscale（调试用）：
 tailscale up --login-server=https://${HS_DOMAIN} --authkey=<KEY> --accept-dns=false
 tailscale status
 tailscale ping <peer-100.64.ip>

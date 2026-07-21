@@ -1,4 +1,3 @@
-import { listen } from "@tauri-apps/api/event";
 import { onMounted, onUnmounted, ref, shallowRef } from "vue";
 import {
   apiConnect,
@@ -25,13 +24,12 @@ export function useNetworkStatus() {
 
   let statusTimer: ReturnType<typeof setInterval> | null = null;
   let pingTimer: ReturnType<typeof setInterval> | null = null;
-  let unlistenAuto: (() => void) | null = null;
 
   async function refreshAdmin() {
     try {
       isAdmin.value = await apiIsAdmin();
     } catch {
-      isAdmin.value = true;
+      isAdmin.value = false;
     }
   }
 
@@ -53,7 +51,6 @@ export function useNetworkStatus() {
       error.value = null;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      // While connecting, status may fail until daemon is up.
       if (phase.value === "connected") {
         error.value = msg;
       }
@@ -91,14 +88,9 @@ export function useNetworkStatus() {
       phase.value = "connected";
       startPolling();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes("管理员") || msg.includes("UAC")) {
-        phase.value = "idle";
-        error.value = "已请求管理员权限，确认 UAC 后窗口会自动重开并继续连接…";
-        return;
-      }
       phase.value = "error";
-      error.value = msg;
+      error.value = e instanceof Error ? e.message : String(e);
+      await refreshAdmin();
     }
   }
 
@@ -123,41 +115,18 @@ export function useNetworkStatus() {
 
   onMounted(async () => {
     await refreshAdmin();
-    try {
-      unlistenAuto = await listen<{ ok: boolean; message: string }>(
-        "roommate-auto-connect",
-        (event) => {
-          if (event.payload.ok) {
-            phase.value = "connected";
-            error.value = null;
-            startPolling();
-          } else {
-            phase.value = "error";
-            error.value = event.payload.message;
-          }
-        },
-      );
-    } catch {
-      // not running inside tauri
-    }
-
-    // Elevated window after UAC: show connecting while Rust auto-connects.
     if (isAdmin.value) {
-      const params = new URLSearchParams(window.location.search);
-      // Rust may already be connecting via --roommate-connect
       void pullStatus().then(() => {
         if (status.value?.selfIps?.length) {
           phase.value = "connected";
           startPolling();
         }
       });
-      void params;
     }
   });
 
   onUnmounted(() => {
     stopPolling();
-    if (unlistenAuto) unlistenAuto();
   });
 
   return {

@@ -3,35 +3,28 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use tauri::AppHandle;
-
 use crate::config;
-use crate::tailscale::process::resolve_cli;
+use crate::tailscale::process::EnginePaths;
 use crate::tailscale::status_parse::{parse_status_json, NetworkStatus};
 
 pub struct TailscaleCli {
     bin: PathBuf,
-    /// When using sidecar daemon; unused for system Windows service.
-    state_dir: PathBuf,
-    use_system_service: bool,
 }
 
 impl TailscaleCli {
-    pub fn new(app: &AppHandle) -> Result<Self, String> {
-        let use_system_service = crate::tailscale::process::system_tailscale_cli().is_some();
-        Ok(Self {
-            bin: resolve_cli(app)?,
-            state_dir: config::state_dir(),
-            use_system_service,
-        })
+    pub fn from_paths(paths: &EnginePaths) -> Self {
+        Self {
+            bin: paths.tailscale.clone(),
+        }
+    }
+
+    pub fn from_bin(bin: PathBuf) -> Self {
+        Self { bin }
     }
 
     fn base_cmd(&self) -> Command {
         let mut cmd = Command::new(&self.bin);
-        if !self.use_system_service {
-            // Best-effort hint for unix-style sockets; Windows system service ignores this.
-            cmd.env("TS_DEBUG_SOCKET_PATH", self.state_dir.join("tailscaled.sock"));
-        }
+        cmd.arg("--socket").arg(config::tailscaled_socket());
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -46,17 +39,21 @@ impl TailscaleCli {
         self.run_args(&["version"], Duration::from_secs(15))
     }
 
-    pub fn up(&self) -> Result<String, String> {
+    pub fn up(&self, hostname: &str) -> Result<String, String> {
         let login = config::login_server();
         let key = config::auth_key();
         if key.contains("replace-me") || key.is_empty() {
             return Err("未配置 AuthKey。请在 .env 设置 ROOMMATE_AUTH_KEY".into());
         }
 
-        let hostname = config::hostname();
+        let host = if hostname.trim().is_empty() {
+            config::hostname()
+        } else {
+            config::sanitize_hostname_part(hostname.trim().trim_start_matches("roommate-"))
+        };
         let login_ref = login.as_str();
         let key_ref = key.as_str();
-        let host_ref = hostname.as_str();
+        let host_ref = host.as_str();
         let args = [
             "up",
             "--login-server",
@@ -67,12 +64,13 @@ impl TailscaleCli {
             host_ref,
             "--accept-dns=false",
             "--accept-routes=false",
+            // Keep tunnel alive after short-lived CLI disconnects.
+            "--unattended",
             "--reset",
         ];
 
         let out = self.run_args(&args, Duration::from_secs(45))?;
 
-        // Confirm we actually logged in (up can return while still NeedsLogin).
         for _ in 0..10 {
             std::thread::sleep(Duration::from_millis(500));
             if let Ok(st) = self.status() {
@@ -110,6 +108,9 @@ impl TailscaleCli {
     pub fn ping(&self, ip: &str) -> Result<u32, String> {
         if ip.is_empty() {
             return Err("IP 为空".into());
+        }
+        if !is_safe_ip(ip) {
+            return Err("非法 IP".into());
         }
         let json_try =
             self.run_args(&["ping", "--json", "-c", "1", ip], Duration::from_secs(15));
@@ -186,6 +187,13 @@ impl TailscaleCli {
     }
 }
 
+fn is_safe_ip(ip: &str) -> bool {
+    let ok = ip
+        .chars()
+        .all(|c| c.is_ascii_hexdigit() || c == '.' || c == ':');
+    ok && !ip.is_empty() && ip.len() <= 45
+}
+
 fn parse_duration_ms(s: &str) -> Option<u32> {
     let s = s.trim();
     if let Some(rest) = s.strip_suffix("ms") {
@@ -227,5 +235,12 @@ mod tests {
             Some(45)
         );
         assert_eq!(parse_duration_ms("12.6ms"), Some(13));
+    }
+
+    #[test]
+    fn rejects_unsafe_ip() {
+        assert!(!is_safe_ip("100.64.0.1; rm -rf /"));
+        assert!(is_safe_ip("100.64.0.3"));
+        assert!(is_safe_ip("fd7a:115c:a1e0::1"));
     }
 }

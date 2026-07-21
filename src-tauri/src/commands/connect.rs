@@ -1,63 +1,34 @@
-use tauri::{AppHandle, Emitter, Manager, State};
-
-use crate::elev;
-use crate::tailscale::{DaemonState, TailscaleCli};
+use crate::config;
+use crate::service::ServiceClient;
 
 #[tauri::command]
 pub fn is_admin() -> bool {
-    elev::is_elevated()
+    // Legacy name kept for UI compatibility: true when network service is reachable.
+    ServiceClient::new().ready()
 }
 
-pub async fn connect_inner(app: &AppHandle, daemon: &DaemonState) -> Result<String, String> {
-    match elev::ensure_elevated() {
-        Ok(()) => {}
-        Err(e) if e == "ELEVATION_RELAUNCH" => {
-            std::thread::spawn(|| {
-                std::thread::sleep(std::time::Duration::from_millis(400));
-                std::process::exit(0);
-            });
-            return Err("正在请求管理员权限，请在 UAC 对话框中确认…".into());
+#[tauri::command]
+pub fn network_service_ready() -> bool {
+    ServiceClient::new().ready()
+}
+
+#[tauri::command]
+pub async fn connect() -> Result<String, String> {
+    let client = ServiceClient::new();
+    let health = client.health().map_err(|e| {
+        if e.contains("未就绪") || e.contains("无法连接") {
+            format!("{e}（安装 Roommate 时会注册网络服务，日常使用无需再弹 UAC）")
+        } else {
+            e
         }
-        Err(e) => return Err(e),
+    })?;
+    if health.ready != Some(true) {
+        return Err("网络服务未就绪，请修复安装或运行 scripts/dev-service.ps1".into());
     }
-
-    let state_dir = crate::config::state_dir();
-    daemon.start(app, &state_dir)?;
-
-    let cli = TailscaleCli::new(app)?;
-    cli.up()
+    client.connect(&config::hostname())
 }
 
 #[tauri::command]
-pub async fn connect(app: AppHandle, daemon: State<'_, DaemonState>) -> Result<String, String> {
-    connect_inner(&app, daemon.inner()).await
-}
-
-#[tauri::command]
-pub async fn disconnect(app: AppHandle, daemon: State<'_, DaemonState>) -> Result<String, String> {
-    if let Ok(cli) = TailscaleCli::new(&app) {
-        let _ = cli.down();
-    }
-    daemon.stop()?;
-    Ok("已断开连接".into())
-}
-
-pub fn spawn_auto_connect_if_needed(app: &AppHandle) {
-    if !crate::config::should_auto_connect() || !elev::is_elevated() {
-        return;
-    }
-
-    let handle = app.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(1200));
-        let daemon = handle.state::<DaemonState>();
-        let result = tauri::async_runtime::block_on(connect_inner(&handle, daemon.inner()));
-        let _ = handle.emit(
-            "roommate-auto-connect",
-            match result {
-                Ok(msg) => serde_json::json!({ "ok": true, "message": msg }),
-                Err(err) => serde_json::json!({ "ok": false, "message": err }),
-            },
-        );
-    });
+pub async fn disconnect() -> Result<String, String> {
+    ServiceClient::new().disconnect()
 }

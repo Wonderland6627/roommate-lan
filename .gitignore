@@ -29,6 +29,7 @@ src-tauri/gen
 
 # Sidecar binaries (fetch via scripts/fetch-tailscale-bins.ps1)
 src-tauri/binaries/*.exe
+src-tauri/binaries/*.dll
 !src-tauri/binaries/.gitkeep
 
 # Secrets / local env

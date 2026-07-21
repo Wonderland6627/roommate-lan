@@ -1,0 +1,62 @@
+THIRD-PARTY NOTICES
+===================
+
+Roommate-LAN bundles networking components that are not part of the Roommate
+source tree. This file summarizes attribution requirements. Verify current
+upstream licenses before public redistribution.
+
+The client connects to a self-hosted Headscale control plane operated for
+Roommate — it does not use Tailscale.com's coordination service by default.
+
+
+1) Tailscale CLI / daemon (tailscale.exe, tailscaled.exe)
+---------------------------------------------------------
+
+Source project: https://github.com/tailscale/tailscale
+License: BSD 3-Clause License
+Copyright (c) 2020 Tailscale Inc & contributors.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Pinned binary version (via scripts/fetch-tailscale-bins.ps1): 1.82.0
+
+Prebuilt installers from pkgs.tailscale.com are also subject to Tailscale's
+Terms of Service (https://tailscale.com/terms). Review those terms before
+shipping a public installer; prefer building CLI/daemon from the BSD-licensed
+source tree when required.
+
+
+2) Wintun (wintun.dll)
+----------------------
+
+Project: https://www.wintun.net/
+License: Prebuilt Binaries License
+  https://git.zx2c4.com/wintun/tree/prebuilt-binaries-license.txt
+
+Wintun may be redistributed only when bundled with other software that uses
+the Wintun API. Do not redistribute wintun.dll as a standalone product, and
+do not reverse engineer or modify the binary. Do not use the WireGuard or
+Wintun names to promote derived products without prior consent.

@@ -1,29 +1,108 @@
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager};
+use crate::config;
 
-/// Holds the spawned `tailscaled` child process for the app lifetime.
+/// Resolved sidecar binaries next to the Roommate install / build output.
+#[derive(Debug, Clone)]
+pub struct EnginePaths {
+    pub install_dir: PathBuf,
+    pub tailscale: PathBuf,
+    pub tailscaled: PathBuf,
+}
+
+impl EnginePaths {
+    pub fn resolve() -> Result<Self, String> {
+        let install_dir = std::env::current_exe()
+            .map_err(|e| format!("无法定位程序路径: {e}"))?
+            .parent()
+            .ok_or_else(|| "无法解析安装目录".to_string())?
+            .to_path_buf();
+
+        let triple = host_triple();
+        let tailscale = find_bin(&install_dir, "tailscale", triple)?;
+        let tailscaled = find_bin(&install_dir, "tailscaled", triple)?;
+        Ok(Self {
+            install_dir,
+            tailscale,
+            tailscaled,
+        })
+    }
+
+    pub fn ensure_wintun(&self) -> Result<(), String> {
+        #[cfg(not(windows))]
+        {
+            return Ok(());
+        }
+        #[cfg(windows)]
+        {
+            let dest = self.install_dir.join("wintun.dll");
+            if dest.is_file() {
+                return Ok(());
+            }
+            let search = [
+                self.install_dir.join("binaries").join("wintun.dll"),
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("binaries")
+                    .join("wintun.dll"),
+            ];
+            for src in search {
+                if !src.is_file() {
+                    continue;
+                }
+                std::fs::copy(&src, &dest).map_err(|e| {
+                    format!("无法将 wintun.dll 复制到 {}: {e}", dest.display())
+                })?;
+                return Ok(());
+            }
+            Err(format!(
+                "缺少 wintun.dll（应与 {} 同目录）。请运行 npm run fetch-bins",
+                self.tailscaled.display()
+            ))
+        }
+    }
+}
+
+fn find_bin(install_dir: &Path, name: &str, triple: &str) -> Result<PathBuf, String> {
+    let candidates = [
+        install_dir.join(format!("{name}.exe")),
+        install_dir.join(name),
+        install_dir.join("binaries").join(format!("{name}.exe")),
+        install_dir.join("binaries").join(name),
+        install_dir.join(format!("{name}-{triple}.exe")),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries")
+            .join(format!("{name}-{triple}.exe")),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries")
+            .join(format!("{name}.exe")),
+    ];
+    for c in candidates {
+        if c.is_file() {
+            return Ok(c);
+        }
+    }
+    Err(format!(
+        "找不到内置 {name} sidecar。请运行 npm run fetch-bins 拉取二进制后再试"
+    ))
+}
+
+/// Holds the spawned `tailscaled` child process for the service lifetime.
 pub struct DaemonState {
     child: Mutex<Option<Child>>,
-    /// When true, we drive the official Windows Tailscale service (no sidecar daemon).
-    pub use_system_service: Mutex<bool>,
 }
 
 impl DaemonState {
     pub fn new() -> Self {
         Self {
             child: Mutex::new(None),
-            use_system_service: Mutex::new(false),
         }
     }
 
     pub fn is_running(&self) -> bool {
-        if *self.use_system_service.lock().unwrap_or_else(|e| e.into_inner()) {
-            return system_tailscale_running();
-        }
         let mut guard = self.child.lock().expect("daemon mutex");
         match guard.as_mut() {
             Some(child) => match child.try_wait() {
@@ -47,39 +126,34 @@ impl DaemonState {
         Ok(())
     }
 
-    pub fn start(&self, app: &AppHandle, state_dir: &Path) -> Result<(), String> {
-        // Windows: prefer official Tailscale service (Wintun). Sidecar CLI otherwise
-        // talks to the wrong daemon and stays NeedsLogin forever.
+    pub fn cleanup(&self, paths: &EnginePaths, state_dir: &Path) {
+        let mut cmd = Command::new(&paths.tailscaled);
+        cmd.arg("--socket")
+            .arg(config::tailscaled_socket())
+            .arg("--statedir")
+            .arg(state_dir)
+            .arg("--cleanup")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
         #[cfg(windows)]
         {
-            if let Some(cli) = system_tailscale_cli() {
-                let _ = cli;
-                *self
-                    .use_system_service
-                    .lock()
-                    .map_err(|e| e.to_string())? = true;
-                if !system_tailscale_running() {
-                    let _ = Command::new("sc")
-                        .args(["start", "Tailscale"])
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status();
-                    std::thread::sleep(Duration::from_millis(1200));
-                }
-                if !system_tailscale_running() {
-                    return Err(
-                        "已检测到官方 Tailscale，但服务未运行。请从开始菜单打开 Tailscale 后重试"
-                            .into(),
-                    );
-                }
-                return Ok(());
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let _ = cmd.status();
+    }
+
+    pub fn start(&self, paths: &EnginePaths, state_dir: &Path) -> Result<(), String> {
+        #[cfg(windows)]
+        {
+            if official_tailscale_running() {
+                return Err(
+                    "检测到官方 Tailscale 正在运行。请先退出官方客户端（托盘退出或执行 net stop Tailscale），再连接 Roommate。"
+                        .into(),
+                );
             }
         }
-
-        *self
-            .use_system_service
-            .lock()
-            .map_err(|e| e.to_string())? = false;
 
         if self.is_running() {
             return Ok(());
@@ -87,17 +161,35 @@ impl DaemonState {
 
         std::fs::create_dir_all(state_dir)
             .map_err(|e| format!("无法创建状态目录 {}: {e}", state_dir.display()))?;
+        let log_dir = config::log_dir();
+        std::fs::create_dir_all(&log_dir)
+            .map_err(|e| format!("无法创建日志目录 {}: {e}", log_dir.display()))?;
 
-        let bin = resolve_sidecar(app, "tailscaled")?;
+        paths.ensure_wintun()?;
+
         let state = state_dir.join("tailscaled.state");
+        let log_path = log_dir.join("tailscaled.log");
+        let log_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .map_err(|e| format!("无法打开日志 {}: {e}", log_path.display()))?;
+        let log_err = log_file
+            .try_clone()
+            .map_err(|e| format!("无法克隆日志句柄: {e}"))?;
 
-        let mut cmd = Command::new(&bin);
+        let mut cmd = Command::new(&paths.tailscaled);
         cmd.arg("--statedir")
             .arg(state_dir)
             .arg("--state")
             .arg(&state)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .arg("--socket")
+            .arg(config::tailscaled_socket())
+            .arg("--tun")
+            .arg(config::tun_name())
+            .arg("--no-logs-no-support")
+            .stdout(Stdio::from(log_file))
+            .stderr(Stdio::from(log_err));
 
         #[cfg(windows)]
         {
@@ -106,19 +198,29 @@ impl DaemonState {
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
 
-        let child = cmd
-            .spawn()
-            .map_err(|e| format!("启动 tailscaled 失败 ({}): {e}", bin.display()))?;
+        let child = cmd.spawn().map_err(|e| {
+            format!(
+                "启动 tailscaled 失败 ({}): {e}",
+                paths.tailscaled.display()
+            )
+        })?;
 
         let mut guard = self.child.lock().map_err(|e| e.to_string())?;
         *guard = Some(child);
+        drop(guard);
 
         std::thread::sleep(Duration::from_millis(800));
         if !self.is_running() {
-            return Err(
-                "tailscaled 启动后立即退出。Windows 请先安装官方 Tailscale，或检查杀软是否拦截"
-                    .into(),
-            );
+            let hint = read_log_tail(&log_path, 1200);
+            return Err(format!(
+                "tailscaled 启动后立即退出。请检查杀软是否拦截，并确认 wintun.dll 与 sidecar 同目录。日志: {}{}",
+                log_path.display(),
+                if hint.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n{hint}")
+                }
+            ));
         }
         Ok(())
     }
@@ -130,15 +232,8 @@ impl Default for DaemonState {
     }
 }
 
-pub fn system_tailscale_cli() -> Option<PathBuf> {
-    let candidates = [
-        PathBuf::from(r"C:\Program Files\Tailscale\tailscale.exe"),
-        PathBuf::from(r"C:\Program Files (x86)\Tailscale\tailscale.exe"),
-    ];
-    candidates.into_iter().find(|p| p.is_file())
-}
-
-fn system_tailscale_running() -> bool {
+#[cfg(windows)]
+pub fn official_tailscale_running() -> bool {
     Command::new("sc")
         .args(["query", "Tailscale"])
         .output()
@@ -149,59 +244,20 @@ fn system_tailscale_running() -> bool {
         .unwrap_or(false)
 }
 
-pub fn resolve_cli(app: &AppHandle) -> Result<PathBuf, String> {
-    if let Some(sys) = system_tailscale_cli() {
-        return Ok(sys);
-    }
-    resolve_sidecar(app, "tailscale")
+#[cfg(not(windows))]
+pub fn official_tailscale_running() -> bool {
+    false
 }
 
-pub fn resolve_sidecar(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidates = [
-                dir.join(format!("{name}.exe")),
-                dir.join(name),
-                dir.join("binaries").join(format!("{name}.exe")),
-                dir.join("binaries").join(name),
-            ];
-            for c in candidates {
-                if c.is_file() {
-                    return Ok(c);
-                }
-            }
-        }
+fn read_log_tail(path: &Path, max_bytes: usize) -> String {
+    let Ok(data) = std::fs::read(path) else {
+        return String::new();
+    };
+    if data.is_empty() {
+        return String::new();
     }
-
-    let resource_dir = app
-        .path()
-        .resource_dir()
-        .map_err(|e| format!("resource_dir: {e}"))?;
-
-    let triple = host_triple();
-    let candidates = [
-        resource_dir
-            .join("binaries")
-            .join(format!("{name}-{triple}.exe")),
-        resource_dir.join("binaries").join(format!("{name}.exe")),
-        resource_dir.join(format!("{name}-{triple}.exe")),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("binaries")
-            .join(format!("{name}-{triple}.exe")),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("binaries")
-            .join(format!("{name}.exe")),
-    ];
-
-    for c in candidates {
-        if c.is_file() {
-            return Ok(c);
-        }
-    }
-
-    Err(format!(
-        "找不到 Tailscale。请安装官方 Tailscale，或运行 npm run fetch-bins 拉取 sidecar"
-    ))
+    let start = data.len().saturating_sub(max_bytes);
+    String::from_utf8_lossy(&data[start..]).trim().to_string()
 }
 
 fn host_triple() -> &'static str {
@@ -212,5 +268,25 @@ fn host_triple() -> &'static str {
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
     {
         "unknown"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_bin_prefers_manifest_binaries_in_dev() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
+        if !dir.exists() {
+            return;
+        }
+        // Smoke: resolve from CARGO_MANIFEST_DIR fallbacks when install_dir empty of bins.
+        let triple = host_triple();
+        let name = format!("tailscale-{triple}.exe");
+        if dir.join(&name).is_file() || dir.join("tailscale.exe").is_file() {
+            let r = find_bin(Path::new("."), "tailscale", triple);
+            assert!(r.is_ok(), "{r:?}");
+        }
     }
 }

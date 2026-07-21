@@ -1,15 +1,14 @@
-mod commands;
-mod config;
-mod elev;
-mod tailscale;
+pub mod commands;
+pub mod config;
+pub mod service;
+pub mod tailscale;
 
-use tauri::{Manager, RunEvent};
+use tauri::RunEvent;
 
 use commands::{
-    connect, disconnect, get_status, is_admin, ping_peer, sidecar_version,
-    spawn_auto_connect_if_needed,
+    connect, disconnect, get_status, is_admin, network_service_ready, ping_peer, sidecar_version,
 };
-use tailscale::DaemonState;
+use service::ServiceClient;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -19,25 +18,21 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
-        .manage(DaemonState::new())
         .invoke_handler(tauri::generate_handler![
             connect,
             disconnect,
             get_status,
             ping_peer,
             is_admin,
+            network_service_ready,
             sidecar_version,
         ])
-        .setup(|app| {
-            spawn_auto_connect_if_needed(app.handle());
-            Ok(())
-        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
+        .run(|_app_handle, event| {
             if let RunEvent::Exit = event {
-                let daemon = app_handle.state::<DaemonState>();
-                let _ = daemon.stop();
+                // Ask service to tear down the tunnel; keep the Windows service itself running.
+                let _ = ServiceClient::new().disconnect();
             }
         });
 }

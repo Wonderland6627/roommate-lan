@@ -17,7 +17,7 @@ defineProps<{
       <div class="ip">{{ ips[0] || "未分配 IP" }}</div>
       <div class="state">
         {{ backendState || "Idle" }}
-        <span v-if="!isAdmin" class="warn">· 需管理员</span>
+        <span v-if="!isAdmin" class="warn">· 服务未就绪</span>
       </div>
     </div>
   </div>

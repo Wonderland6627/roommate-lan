@@ -1,9 +1,6 @@
-use tauri::AppHandle;
-
-use crate::tailscale::TailscaleCli;
+use crate::service::ServiceClient;
 
 #[tauri::command]
-pub async fn ping_peer(app: AppHandle, ip: String) -> Result<u32, String> {
-    let cli = TailscaleCli::new(&app)?;
-    cli.ping(&ip)
+pub async fn ping_peer(ip: String) -> Result<u32, String> {
+    ServiceClient::new().ping(&ip)
 }
