@@ -62,7 +62,7 @@ if (-not $SkipHashCheck) {
   }
   Write-Host "MSI hash verified."
 } else {
-  Write-Warning "SkipHashCheck enabled — not verifying MSI integrity."
+  Write-Warning "SkipHashCheck enabled - not verifying MSI integrity."
 }
 
 Write-Host "Extracting MSI (administrative install) ..."

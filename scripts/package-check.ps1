@@ -9,7 +9,7 @@ $Bundle = Join-Path $Root "src-tauri\target\release\bundle"
 $NsisDir = Join-Path $Bundle "nsis"
 
 if (-not (Test-Path $Bundle)) {
-  Write-Error "Bundle folder missing: $Bundle — run npm run tauri build first."
+  Write-Error "Bundle folder missing: $Bundle - run npm run tauri build first."
 }
 
 Write-Host "Scanning $Bundle ..."
@@ -39,7 +39,7 @@ $sidecars = @("tailscale.exe", "tailscaled.exe") | ForEach-Object {
   Get-ChildItem -Path $releaseDir -Filter $_ -ErrorAction SilentlyContinue
 }
 if ($sidecars.Count -lt 2) {
-  Write-Error "Sidecar exes not found next to release binary — verify externalBin bundling."
+  Write-Error "Sidecar exes not found next to release binary - verify externalBin bundling."
 } else {
   $sidecars | ForEach-Object { Write-Host "OK sidecar: $($_.Name)" }
 }
@@ -47,7 +47,7 @@ if ($sidecars.Count -lt 2) {
 $wintun = Get-ChildItem -Path $releaseDir -Filter "wintun.dll" -ErrorAction SilentlyContinue |
   Select-Object -First 1
 if (-not $wintun) {
-  Write-Error "wintun.dll missing from release output — ensure bundle.resources includes it and rebuild."
+  Write-Error "wintun.dll missing from release output - ensure bundle.resources includes it and rebuild."
 }
 Write-Host "OK wintun: $($wintun.FullName)"
 
@@ -62,7 +62,7 @@ if (Test-Path $releaseExe) {
   Write-Host "OK release exe (service host): $releaseExe"
   Write-Host "  Service mode flag: --roommate-service"
 } else {
-  Write-Warning "release roommate.exe not found — expected after tauri build."
+  Write-Warning "release roommate.exe not found - expected after tauri build."
 }
 
 Write-Host "package-check passed."
