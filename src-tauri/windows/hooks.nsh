@@ -15,7 +15,7 @@
   Sleep 800
   ; Quote the executable inside BinaryPathName because $INSTDIR is normally under Program Files.
   ; The outer quotes keep the full path + service flag as one sc.exe argument.
-  nsExec::ExecToLog 'sc.exe create RoommateNetworkService binPath= "$\"$INSTDIR\Roommate-LAN.exe$\" --roommate-service" start= auto DisplayName= "Roommate Network Service" obj= LocalSystem'
+  nsExec::ExecToLog 'sc.exe create RoommateNetworkService binPath= "\$\"$INSTDIR\Roommate-LAN.exe\$\" --roommate-service" start= auto DisplayName= "Roommate Network Service" obj= LocalSystem'
   Pop $0
   ${If} $0 != 0
     DetailPrint "sc create failed with code $0"
