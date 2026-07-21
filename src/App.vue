@@ -18,7 +18,6 @@ const busy = computed(
   <div class="shell">
     <header class="hero animate-fade-up">
       <p class="brand">Roommate-LAN</p>
-      <p class="tagline">一键进入虚拟局域网，Steam 联机少卡顿</p>
     </header>
 
     <ConnectButton
@@ -77,12 +76,6 @@ const busy = computed(
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-}
-.tagline {
-  margin: 0.45rem 0 0;
-  color: var(--ink-muted);
-  font-size: 0.9rem;
-  line-height: 1.45;
 }
 .error {
   margin: 0;

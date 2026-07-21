@@ -24,7 +24,7 @@ copy .env.example .env
 npm install
 npm run fetch-bins
 
-# 3. 管理员安装一次开发用网络服务（仅开发机）
+# 3. 安装一次开发用网络服务（仅开发机；普通窗口即可，会弹一次 UAC）
 #    会编译 release roommate.exe 并注册 RoommateNetworkService
 npm run dev-service
 

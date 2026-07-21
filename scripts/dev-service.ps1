@@ -5,8 +5,9 @@
 
 .DESCRIPTION
   Always rebuilds release roommate.exe, registers RoommateNetworkService (LocalSystem),
-  and starts it. Run from an elevated PowerShell once, then use npm run tauri dev
-  as a normal user.
+  and starts it. May be launched from a normal PowerShell: if not elevated, the script
+  re-launches itself via UAC once, then returns. After the service is installed, use
+  npm run tauri dev as a normal user.
 
 .PARAMETER Action
   install | restart | stop | status | uninstall
@@ -30,12 +31,37 @@ function Get-BinaryPathName {
   return '{0} --roommate-service' -f $Exe
 }
 
-function Assert-Admin {
+function Test-IsAdmin {
   $id = [Security.Principal.WindowsIdentity]::GetCurrent()
   $p = New-Object Security.Principal.WindowsPrincipal($id)
-  if (-not $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    throw "Please run this script as Administrator."
+  return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Ensure-Admin {
+  if (Test-IsAdmin) { return }
+
+  Write-Host "Not elevated — requesting Administrator (UAC)..."
+  $argList = @(
+    "-NoProfile",
+    "-ExecutionPolicy", "Bypass",
+    "-File", $PSCommandPath,
+    "-Action", $Action
+  )
+  try {
+    $proc = Start-Process `
+      -FilePath "powershell.exe" `
+      -Verb RunAs `
+      -ArgumentList $argList `
+      -WorkingDirectory $Root `
+      -Wait `
+      -PassThru
+  } catch {
+    throw "UAC elevation was cancelled or failed: $_"
   }
+  if ($null -eq $proc) {
+    throw "UAC elevation failed (no process returned)."
+  }
+  exit $proc.ExitCode
 }
 
 function Build-Release {
@@ -142,7 +168,7 @@ function Install-RoommateService {
   Write-Host "Done. Now run: npm run tauri dev (as a normal user, no UAC)"
 }
 
-Assert-Admin
+Ensure-Admin
 
 switch ($Action) {
   "status" {
