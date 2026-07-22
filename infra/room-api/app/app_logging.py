@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from datetime import datetime, timedelta, timezone
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,12 @@ from typing import Any
 
 _LOGGER_NAME = "roommate.room_api"
 _configured = False
+# Fixed China Standard Time for log stamps (independent of container UTC).
+CST = timezone(timedelta(hours=8))
+
+
+def _cst_timetuple(timestamp: float):
+    return datetime.fromtimestamp(timestamp, tz=CST).timetuple()
 
 
 def setup_logging(log_dir: str, retain_days: int = 14) -> None:
@@ -30,6 +37,7 @@ def setup_logging(log_dir: str, retain_days: int = 14) -> None:
         "%(asctime)s %(levelname)s %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    fmt.converter = _cst_timetuple  # type: ignore[method-assign]
 
     file_handler = TimedRotatingFileHandler(
         log_file,

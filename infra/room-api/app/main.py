@@ -86,12 +86,16 @@ class JoinBody(BaseModel):
 
 class TokenBody(BaseModel):
     memberToken: str = Field(min_length=8, max_length=128)
+    relayBytes: int | None = Field(default=None, ge=0)
+    p2pBytes: int | None = Field(default=None, ge=0)
 
 
 class PresenceBody(BaseModel):
     memberToken: str = Field(min_length=8, max_length=128)
     nodeId: str = Field(min_length=1, max_length=128)
     virtualIp: str = Field(min_length=1, max_length=64)
+    relayBytes: int | None = Field(default=None, ge=0)
+    p2pBytes: int | None = Field(default=None, ge=0)
 
 
 def _client_ip(request: Request) -> str:
@@ -296,7 +300,12 @@ def report_presence(
         raise HTTPException(400, str(e)) from e
     try:
         result = db.update_presence(
-            room_id, body.memberToken, node_id, virtual_ip
+            room_id,
+            body.memberToken,
+            node_id,
+            virtual_ip,
+            relay_bytes=body.relayBytes,
+            p2p_bytes=body.p2pBytes,
         )
     except PermissionError as e:
         log_event(
@@ -336,7 +345,12 @@ def leave_room(room_id: str, body: TokenBody, request: Request) -> dict[str, str
         log_event("rate_limited", level=logging.WARNING, action="leave", ip=ip)
         raise HTTPException(429, "请求过于频繁，请稍后再试")
     try:
-        result = db.leave(room_id, body.memberToken)
+        result = db.leave(
+            room_id,
+            body.memberToken,
+            relay_bytes=body.relayBytes,
+            p2p_bytes=body.p2pBytes,
+        )
     except PermissionError as e:
         log_event(
             "leave.rejected",
@@ -372,7 +386,12 @@ def dissolve_room(room_id: str, body: TokenBody, request: Request) -> dict[str, 
         log_event("rate_limited", level=logging.WARNING, action="dissolve", ip=ip)
         raise HTTPException(429, "请求过于频繁，请稍后再试")
     try:
-        result = db.dissolve(room_id, body.memberToken)
+        result = db.dissolve(
+            room_id,
+            body.memberToken,
+            relay_bytes=body.relayBytes,
+            p2p_bytes=body.p2pBytes,
+        )
     except PermissionError as e:
         log_event(
             "dissolve.rejected",

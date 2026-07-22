@@ -48,6 +48,9 @@ infra/derper/certs/*.key
 !infra/derper/certs/.gitkeep
 infra/logs/*
 !infra/logs/.gitkeep
+!infra/logs/traffic/
+infra/logs/traffic/*
+!infra/logs/traffic/.gitkeep
 
 # Tauri updater private keys (public key lives in tauri.conf.json)
 src-tauri/keys/*.key

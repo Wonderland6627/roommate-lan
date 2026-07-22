@@ -49,9 +49,26 @@ Room API 将房间生命周期等事件写入宿主机目录 `infra/logs/`（容
 - 当前文件：`room-api.log`
 - 按天滚动，默认保留 14 天（`LOG_RETAIN_DAYS`）
 - 宝塔：文件管理进入部署目录下的 `infra/logs/`，打开 `room-api.log` 即可
+- 日志时间戳为 **UTC+8**（与流量文件一致）
 - 不记录 AuthKey、memberToken、完整房间短码
 
 也可：`docker compose logs -f room-api`（同一内容也会打到 stdout）。
+
+### 房间流量统计（宝塔可查）
+
+客户端按连接路径累计对端 Tx/Rx，经 presence / 退出 上报；**房间销毁时**写入：
+
+| 文件 | 说明 |
+|------|------|
+| `infra/logs/traffic/rooms-YYYY-MM-DD.log` | 当日每个已销毁房间一行（含中继/P2P 字节与可读单位） |
+| `infra/logs/traffic/daily-summary.log` | 按自然日汇总：房间数、中继合计、P2P 合计 |
+
+- **relay**：走自建 DERP 的流量合计（≈云服流量包相关）
+- **p2p**：直连 / peer-relay（不经过云服带宽）
+- `reporters < members` 时表示部分客户端未上报（旧版或异常退出），中继量可能偏小
+- 时间戳与按日文件名均为 **UTC+8**
+
+宝塔：文件管理 → 部署目录 → `infra/logs/traffic/`。
 
 ### 宝塔环境（本机 80/443 已被占用）
 

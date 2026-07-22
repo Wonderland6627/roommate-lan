@@ -16,6 +16,10 @@ export interface PeerView {
   relay?: string | null;
   curAddr?: string | null;
   latencyMs?: number | null;
+  /** Cumulative bytes sent to this peer (tailscale TxBytes). */
+  txBytes?: number;
+  /** Cumulative bytes received from this peer (tailscale RxBytes). */
+  rxBytes?: number;
 }
 
 export interface NetworkStatusDto {

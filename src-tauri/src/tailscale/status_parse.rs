@@ -23,6 +23,12 @@ pub struct PeerView {
     pub relay: Option<String>,
     pub cur_addr: Option<String>,
     pub latency_ms: Option<u32>,
+    /// Cumulative bytes sent to this peer (`tailscale status` TxBytes).
+    #[serde(default)]
+    pub tx_bytes: u64,
+    /// Cumulative bytes received from this peer (`tailscale status` RxBytes).
+    #[serde(default)]
+    pub rx_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +64,10 @@ pub struct RawPeer {
     pub online: Option<bool>,
     #[serde(default, rename = "Active")]
     pub active: Option<bool>,
+    #[serde(default, rename = "TxBytes")]
+    pub tx_bytes: Option<u64>,
+    #[serde(default, rename = "RxBytes")]
+    pub rx_bytes: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,6 +128,8 @@ fn peer_to_view(key: &str, peer: &RawPeer) -> PeerView {
         relay: peer.relay.clone().filter(|s| !s.is_empty()),
         cur_addr: peer.cur_addr.clone().filter(|s| !s.is_empty()),
         latency_ms: None,
+        tx_bytes: peer.tx_bytes.unwrap_or(0),
+        rx_bytes: peer.rx_bytes.unwrap_or(0),
     }
 }
 
@@ -202,7 +214,9 @@ mod tests {
               "Online": true,
               "Active": true,
               "CurAddr": "",
-              "Relay": "txy"
+              "Relay": "txy",
+              "TxBytes": 1024,
+              "RxBytes": 2048
             }
           }
         }"#;
@@ -214,5 +228,7 @@ mod tests {
         assert_eq!(status.peers.len(), 1);
         assert_eq!(status.peers[0].conn, ConnKind::DerpRelay);
         assert_eq!(status.peers[0].hostname, "roommate-bob");
+        assert_eq!(status.peers[0].tx_bytes, 1024);
+        assert_eq!(status.peers[0].rx_bytes, 2048);
     }
 }

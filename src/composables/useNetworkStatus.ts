@@ -11,6 +11,7 @@ import {
   type RoomCredentials,
   type RoomMember,
   type RoomSummary,
+  type TrafficReport,
 } from "../lib/roomApi";
 import {
   apiBootstrapUrl,
@@ -24,6 +25,7 @@ import type {
   ConnectionPhase,
   MemberNetInfo,
   NetworkStatusDto,
+  PeerView,
 } from "../types/network";
 
 const STATUS_MS = 2000;
@@ -34,6 +36,8 @@ const PRESENCE_REFRESH_MS = 60_000;
 
 const LS_DISPLAY = "roommate.displayName";
 const LS_CODE = "roommate.lastCode";
+
+type PeerByteSample = { tx: number; rx: number };
 
 export function useNetworkStatus() {
   const phase = ref<ConnectionPhase>("idle");
@@ -58,10 +62,70 @@ export function useNetworkStatus() {
   const lastReportedKey = ref("");
   const lastPresenceAt = ref(0);
 
+  /** Session-local path-classified traffic (not reactive UI state). */
+  let relayBytesAccum = 0;
+  let p2pBytesAccum = 0;
+  const lastPeerBytes = new Map<string, PeerByteSample>();
+
   let statusTimer: ReturnType<typeof setInterval> | null = null;
   let pingTimer: ReturnType<typeof setInterval> | null = null;
   let lobbyTimer: ReturnType<typeof setInterval> | null = null;
   let membersTimer: ReturnType<typeof setInterval> | null = null;
+
+  function resetTrafficAccum() {
+    relayBytesAccum = 0;
+    p2pBytesAccum = 0;
+    lastPeerBytes.clear();
+  }
+
+  function currentTraffic(): TrafficReport {
+    return {
+      relayBytes: Math.max(0, Math.floor(relayBytesAccum)),
+      p2pBytes: Math.max(0, Math.floor(p2pBytesAccum)),
+    };
+  }
+
+  function findMemberPeer(
+    member: RoomMember,
+    peers: PeerView[],
+  ): PeerView | undefined {
+    const vip = member.virtualIp?.trim() || "";
+    return (
+      peers.find((p) => member.nodeId && p.id === member.nodeId) ??
+      peers.find((p) => vip && p.ips.includes(vip))
+    );
+  }
+
+  function accumulateTraffic(st: NetworkStatusDto) {
+    const current = session.value;
+    if (!current || phase.value !== "connected") return;
+
+    const selfMemberId = current.memberId;
+    const roomPeers = members.value.filter((m) => m.id !== selfMemberId);
+
+    for (const member of roomPeers) {
+      const peer = findMemberPeer(member, st.peers ?? []);
+      if (!peer) continue;
+
+      const tx = typeof peer.txBytes === "number" ? peer.txBytes : 0;
+      const rx = typeof peer.rxBytes === "number" ? peer.rxBytes : 0;
+      const total = Math.max(0, tx) + Math.max(0, rx);
+      const key = peer.id || member.id;
+      const prev = lastPeerBytes.get(key);
+      lastPeerBytes.set(key, { tx, rx });
+      if (!prev) continue;
+
+      const prevTotal = Math.max(0, prev.tx) + Math.max(0, prev.rx);
+      const delta = total - prevTotal;
+      if (delta <= 0) continue;
+
+      if (peer.conn === "derpRelay") {
+        relayBytesAccum += delta;
+      } else if (peer.conn === "p2p" || peer.conn === "peerRelay") {
+        p2pBytesAccum += delta;
+      }
+    }
+  }
 
   async function refreshAdmin() {
     try {
@@ -118,6 +182,7 @@ export function useNetworkStatus() {
         memberToken: current.memberToken,
         nodeId,
         virtualIp,
+        traffic: currentTraffic(),
       });
       lastReportedKey.value = key;
       lastPresenceAt.value = now;
@@ -132,6 +197,7 @@ export function useNetworkStatus() {
       status.value = next;
       if (phase.value === "connected") {
         error.value = null;
+        accumulateTraffic(next);
         await maybeReportPresence();
       }
     } catch (e) {
@@ -214,6 +280,7 @@ export function useNetworkStatus() {
     error.value = null;
     lastReportedKey.value = "";
     lastPresenceAt.value = 0;
+    resetTrafficAccum();
     stopLobbyPolling();
     try {
       await apiConnect({
@@ -226,9 +293,19 @@ export function useNetworkStatus() {
     } catch (e) {
       try {
         if (creds.isHost) {
-          await dissolveRoom(bootstrapUrl.value, creds.room.id, creds.memberToken);
+          await dissolveRoom(
+            bootstrapUrl.value,
+            creds.room.id,
+            creds.memberToken,
+            currentTraffic(),
+          );
         } else {
-          await leaveRoom(bootstrapUrl.value, creds.room.id, creds.memberToken);
+          await leaveRoom(
+            bootstrapUrl.value,
+            creds.room.id,
+            creds.memberToken,
+            currentTraffic(),
+          );
         }
       } catch {
         // ignore cleanup errors
@@ -239,6 +316,7 @@ export function useNetworkStatus() {
       members.value = [];
       lastReportedKey.value = "";
       lastPresenceAt.value = 0;
+      resetTrafficAccum();
       stopMembersPolling();
       startLobbyPolling();
       await refreshAdmin();
@@ -332,6 +410,16 @@ export function useNetworkStatus() {
     stopPolling();
     stopMembersPolling();
 
+    // One last status sample so leave/dissolve carries freshest deltas.
+    try {
+      const next = await apiGetStatus();
+      status.value = next;
+      accumulateTraffic(next);
+    } catch {
+      // best-effort
+    }
+    const traffic = currentTraffic();
+
     let roomErr: string | null = null;
     try {
       if (bootstrapUrl.value) {
@@ -340,12 +428,14 @@ export function useNetworkStatus() {
             bootstrapUrl.value,
             current.room.id,
             current.memberToken,
+            traffic,
           );
         } else {
           await leaveRoom(
             bootstrapUrl.value,
             current.room.id,
             current.memberToken,
+            traffic,
           );
         }
       }
@@ -378,6 +468,7 @@ export function useNetworkStatus() {
     latencies.value = {};
     lastReportedKey.value = "";
     lastPresenceAt.value = 0;
+    resetTrafficAccum();
     phase.value = "idle";
     error.value = roomErr
       ? `已断开，但房间清理失败（可能仍在列表）: ${roomErr}`
@@ -396,9 +487,11 @@ export function useNetworkStatus() {
         current.room.id,
         current.memberToken,
         current.isHost,
+        currentTraffic(),
       );
     }
     session.value = null;
+    resetTrafficAccum();
     // Tunnel teardown is handled by Rust RunEvent::Exit → service disconnect.
   }
 
@@ -436,9 +529,7 @@ export function useNetworkStatus() {
     }
 
     const peers = status.value?.peers ?? [];
-    const peer =
-      peers.find((p) => member.nodeId && p.id === member.nodeId) ??
-      peers.find((p) => virtualIp && p.ips.includes(virtualIp));
+    const peer = findMemberPeer(member, peers);
 
     if (!peer) {
       return {

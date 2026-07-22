@@ -13,6 +13,7 @@ from typing import Iterator
 
 from .app_logging import log_event
 from .settings import settings
+from .traffic_log import RoomTrafficSnapshot, record_room_closed
 
 CODE_ALPHABET = string.ascii_uppercase  # A-Z only
 CODE_LEN = 4
@@ -73,12 +74,15 @@ class Member:
     node_id: str | None = None
     virtual_ip: str | None = None
     presence_at: int | None = None
+    relay_bytes: int = 0
+    p2p_bytes: int = 0
 
 
 @dataclass
 class PurgedRoom:
     id: str
     name: str
+    traffic: RoomTrafficSnapshot | None = None
 
 
 @dataclass
@@ -88,6 +92,7 @@ class LeaveResult:
     member_id: str
     display_name: str
     room_deleted: bool
+    traffic: RoomTrafficSnapshot | None = None
 
 
 @dataclass
@@ -96,12 +101,26 @@ class DissolveResult:
     room_name: str
     member_id: str
     display_name: str
+    traffic: RoomTrafficSnapshot | None = None
 
 
 @dataclass
 class PresenceResult:
     member: Member
     first_presence: bool
+
+
+def _clamp_bytes(value: int | None) -> int:
+    if value is None:
+        return 0
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return 0
+    if n < 0:
+        return 0
+    # Cap absurd values (~1 PiB) to avoid overflow noise.
+    return min(n, 1 << 50)
 
 
 def validate_node_id(node_id: str) -> str:
@@ -141,6 +160,49 @@ def _member_from_row(r: sqlite3.Row) -> Member:
         node_id=r["node_id"] if "node_id" in keys else None,
         virtual_ip=r["virtual_ip"] if "virtual_ip" in keys else None,
         presence_at=r["presence_at"] if "presence_at" in keys else None,
+        relay_bytes=int(r["relay_bytes"]) if "relay_bytes" in keys and r["relay_bytes"] is not None else 0,
+        p2p_bytes=int(r["p2p_bytes"]) if "p2p_bytes" in keys and r["p2p_bytes"] is not None else 0,
+    )
+
+
+def _snapshot_traffic(
+    conn: sqlite3.Connection,
+    room_id: str,
+    *,
+    reason: str,
+    closed_at: int | None = None,
+) -> RoomTrafficSnapshot | None:
+    room = conn.execute(
+        "SELECT id, name, created_at FROM rooms WHERE id = ?",
+        (room_id,),
+    ).fetchone()
+    if not room:
+        return None
+    members = conn.execute(
+        "SELECT relay_bytes, p2p_bytes FROM members WHERE room_id = ?",
+        (room_id,),
+    ).fetchall()
+    relay_total = 0
+    p2p_total = 0
+    reporters = 0
+    for m in members:
+        keys = m.keys()
+        relay = int(m["relay_bytes"]) if "relay_bytes" in keys and m["relay_bytes"] is not None else 0
+        p2p = int(m["p2p_bytes"]) if "p2p_bytes" in keys and m["p2p_bytes"] is not None else 0
+        relay_total += max(0, relay)
+        p2p_total += max(0, p2p)
+        if relay > 0 or p2p > 0:
+            reporters += 1
+    return RoomTrafficSnapshot(
+        room_id=room["id"],
+        name=room["name"],
+        reason=reason,
+        created_at=int(room["created_at"]),
+        closed_at=closed_at if closed_at is not None else _now(),
+        member_count=len(members),
+        reporters=reporters,
+        relay_bytes=relay_total,
+        p2p_bytes=p2p_total,
     )
 
 
@@ -204,6 +266,14 @@ class Database:
             conn.execute("ALTER TABLE members ADD COLUMN virtual_ip TEXT")
         if "presence_at" not in cols:
             conn.execute("ALTER TABLE members ADD COLUMN presence_at INTEGER")
+        if "relay_bytes" not in cols:
+            conn.execute(
+                "ALTER TABLE members ADD COLUMN relay_bytes INTEGER NOT NULL DEFAULT 0"
+            )
+        if "p2p_bytes" not in cols:
+            conn.execute(
+                "ALTER TABLE members ADD COLUMN p2p_bytes INTEGER NOT NULL DEFAULT 0"
+            )
 
     def purge_expired(self) -> list[PurgedRoom]:
         now = _now()
@@ -212,11 +282,19 @@ class Database:
                 "SELECT id, name FROM rooms WHERE expires_at <= ?",
                 (now,),
             ).fetchall()
-            purged = [PurgedRoom(id=r["id"], name=r["name"]) for r in rows]
-            for room in purged:
-                conn.execute("DELETE FROM rooms WHERE id = ?", (room.id,))
+            purged: list[PurgedRoom] = []
+            for r in rows:
+                snap = _snapshot_traffic(
+                    conn, r["id"], reason="expired", closed_at=now
+                )
+                conn.execute("DELETE FROM rooms WHERE id = ?", (r["id"],))
+                purged.append(
+                    PurgedRoom(id=r["id"], name=r["name"], traffic=snap)
+                )
         for room in purged:
             log_event("room.expired", room_id=room.id, name=room.name)
+            if room.traffic:
+                record_room_closed(room.traffic)
         return purged
 
     def purge_stale_hosts(
@@ -234,6 +312,7 @@ class Database:
         if stale <= 0:
             return []
         cutoff = _now() - stale
+        now = _now()
         with self.connect() as conn:
             rows = conn.execute(
                 """
@@ -244,11 +323,19 @@ class Database:
                 """,
                 (cutoff,),
             ).fetchall()
-            purged = [PurgedRoom(id=r["id"], name=r["name"]) for r in rows]
-            for room in purged:
-                conn.execute("DELETE FROM rooms WHERE id = ?", (room.id,))
+            purged: list[PurgedRoom] = []
+            for r in rows:
+                snap = _snapshot_traffic(
+                    conn, r["id"], reason="stale_host", closed_at=now
+                )
+                conn.execute("DELETE FROM rooms WHERE id = ?", (r["id"],))
+                purged.append(
+                    PurgedRoom(id=r["id"], name=r["name"], traffic=snap)
+                )
         for room in purged:
             log_event("room.stale_host", room_id=room.id, name=room.name)
+            if room.traffic:
+                record_room_closed(room.traffic)
         return purged
 
     def create_room(self, name: str, display_name: str) -> tuple[Room, Member, str, str]:
@@ -454,6 +541,8 @@ class Database:
         member_token: str,
         node_id: str,
         virtual_ip: str,
+        relay_bytes: int | None = None,
+        p2p_bytes: int | None = None,
     ) -> PresenceResult:
         member = self.member_by_token(room_id, member_token)
         if not member:
@@ -463,27 +552,78 @@ class Database:
             raise LookupError("房间不存在或已过期")
         first_presence = member.presence_at is None
         now = _now()
+        relay = max(member.relay_bytes, _clamp_bytes(relay_bytes))
+        p2p = max(member.p2p_bytes, _clamp_bytes(p2p_bytes))
         with self.connect() as conn:
             conn.execute(
                 """
                 UPDATE members
-                SET node_id = ?, virtual_ip = ?, presence_at = ?
+                SET node_id = ?, virtual_ip = ?, presence_at = ?,
+                    relay_bytes = ?, p2p_bytes = ?
                 WHERE id = ?
                 """,
-                (node_id, virtual_ip, now, member.id),
+                (node_id, virtual_ip, now, relay, p2p, member.id),
             )
         member.node_id = node_id
         member.virtual_ip = virtual_ip
         member.presence_at = now
+        member.relay_bytes = relay
+        member.p2p_bytes = p2p
         return PresenceResult(member=member, first_presence=first_presence)
 
-    def leave(self, room_id: str, member_token: str) -> LeaveResult:
+    def update_member_traffic(
+        self,
+        room_id: str,
+        member_token: str,
+        relay_bytes: int | None = None,
+        p2p_bytes: int | None = None,
+    ) -> Member:
         member = self.member_by_token(room_id, member_token)
         if not member:
             raise PermissionError("无效的成员凭证")
+        relay = max(member.relay_bytes, _clamp_bytes(relay_bytes))
+        p2p = max(member.p2p_bytes, _clamp_bytes(p2p_bytes))
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE members
+                SET relay_bytes = ?, p2p_bytes = ?
+                WHERE id = ?
+                """,
+                (relay, p2p, member.id),
+            )
+        member.relay_bytes = relay
+        member.p2p_bytes = p2p
+        return member
+
+    def leave(
+        self,
+        room_id: str,
+        member_token: str,
+        relay_bytes: int | None = None,
+        p2p_bytes: int | None = None,
+    ) -> LeaveResult:
+        member = self.member_by_token(room_id, member_token)
+        if not member:
+            raise PermissionError("无效的成员凭证")
+        if relay_bytes is not None or p2p_bytes is not None:
+            self.update_member_traffic(
+                room_id, member_token, relay_bytes, p2p_bytes
+            )
+            member = self.member_by_token(room_id, member_token) or member
         room = self.get_room(room_id)
         room_name = room.name if room else room_id
+        traffic: RoomTrafficSnapshot | None = None
         with self.connect() as conn:
+            remaining_before = conn.execute(
+                "SELECT COUNT(*) AS c FROM members WHERE room_id = ?",
+                (room_id,),
+            ).fetchone()["c"]
+            will_delete = remaining_before <= 1
+            if will_delete:
+                traffic = _snapshot_traffic(
+                    conn, room_id, reason="empty_after_leave"
+                )
             conn.execute("DELETE FROM members WHERE id = ?", (member.id,))
             remaining = conn.execute(
                 "SELECT COUNT(*) AS c FROM members WHERE room_id = ?",
@@ -492,27 +632,44 @@ class Database:
             room_deleted = remaining == 0
             if room_deleted:
                 conn.execute("DELETE FROM rooms WHERE id = ?", (room_id,))
+        if traffic:
+            record_room_closed(traffic)
         return LeaveResult(
             room_id=room_id,
             room_name=room_name,
             member_id=member.id,
             display_name=member.display_name,
             room_deleted=room_deleted,
+            traffic=traffic if room_deleted else None,
         )
 
-    def dissolve(self, room_id: str, member_token: str) -> DissolveResult:
+    def dissolve(
+        self,
+        room_id: str,
+        member_token: str,
+        relay_bytes: int | None = None,
+        p2p_bytes: int | None = None,
+    ) -> DissolveResult:
         member = self.member_by_token(room_id, member_token)
         if not member:
             raise PermissionError("无效的成员凭证")
         if not member.is_host:
             raise PermissionError("仅房主可解散房间")
+        if relay_bytes is not None or p2p_bytes is not None:
+            self.update_member_traffic(
+                room_id, member_token, relay_bytes, p2p_bytes
+            )
         room = self.get_room(room_id)
         room_name = room.name if room else room_id
         with self.connect() as conn:
+            traffic = _snapshot_traffic(conn, room_id, reason="dissolved")
             conn.execute("DELETE FROM rooms WHERE id = ?", (room_id,))
+        if traffic:
+            record_room_closed(traffic)
         return DissolveResult(
             room_id=room_id,
             room_name=room_name,
             member_id=member.id,
             display_name=member.display_name,
+            traffic=traffic,
         )
