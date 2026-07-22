@@ -2,20 +2,23 @@
 ; Note: sc.exe requires a space after '='. binPath must be ONE quoted value that includes args.
 
 !macro NSIS_HOOK_PREINSTALL
+  ; 1060 = service not installed yet (fresh install) — ignore noise from stop.
   DetailPrint "Stopping RoommateNetworkService (if present)..."
-  nsExec::ExecToLog 'sc.exe stop RoommateNetworkService'
+  nsExec::ExecToLog 'cmd.exe /C sc.exe stop RoommateNetworkService ^>nul 2^>^&1 ^& exit /B 0'
   Sleep 1500
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
+  ; Cargo package name is "roommate" → installed main binary is roommate.exe
+  ; (productName "Roommate-LAN" is the folder / display name, not the exe file).
   DetailPrint "Installing RoommateNetworkService..."
-  nsExec::ExecToLog 'sc.exe stop RoommateNetworkService'
+  nsExec::ExecToLog 'cmd.exe /C sc.exe stop RoommateNetworkService ^>nul 2^>^&1 ^& exit /B 0'
   Sleep 800
-  nsExec::ExecToLog 'sc.exe delete RoommateNetworkService'
+  nsExec::ExecToLog 'cmd.exe /C sc.exe delete RoommateNetworkService ^>nul 2^>^&1 ^& exit /B 0'
   Sleep 800
   ; Quote the executable inside BinaryPathName because $INSTDIR is normally under Program Files.
   ; The outer quotes keep the full path + service flag as one sc.exe argument.
-  nsExec::ExecToLog 'sc.exe create RoommateNetworkService binPath= "\$\"$INSTDIR\Roommate-LAN.exe\$\" --roommate-service" start= auto DisplayName= "Roommate Network Service" obj= LocalSystem'
+  nsExec::ExecToLog 'sc.exe create RoommateNetworkService binPath= "\$\"$INSTDIR\roommate.exe\$\" --roommate-service" start= auto DisplayName= "Roommate Network Service" obj= LocalSystem'
   Pop $0
   ${If} $0 != 0
     DetailPrint "sc create failed with code $0"
