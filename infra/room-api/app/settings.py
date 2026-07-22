@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     join_fail_limit_per_minute: int = 20
     # Drop rooms whose host stopped reporting presence (app crash / close without dissolve).
     host_stale_secs: int = 900
+    # Drop non-host members whose presence/join went stale (join-but-no-tunnel, crash without leave).
+    member_stale_secs: int = 120
+    # Headscale preauth keys: ephemeral nodes auto-expire after disconnect.
+    authkey_ephemeral: bool = True
 
 
 settings = Settings()

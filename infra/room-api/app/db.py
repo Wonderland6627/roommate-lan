@@ -92,6 +92,8 @@ class LeaveResult:
     member_id: str
     display_name: str
     room_deleted: bool
+    node_id: str | None = None
+    virtual_ip: str | None = None
     traffic: RoomTrafficSnapshot | None = None
 
 
@@ -101,6 +103,7 @@ class DissolveResult:
     room_name: str
     member_id: str
     display_name: str
+    node_ids: list[tuple[str | None, str | None]] | None = None
     traffic: RoomTrafficSnapshot | None = None
 
 
@@ -108,6 +111,22 @@ class DissolveResult:
 class PresenceResult:
     member: Member
     first_presence: bool
+
+
+@dataclass
+class StaleMember:
+    id: str
+    room_id: str
+    display_name: str
+    node_id: str | None
+    virtual_ip: str | None
+
+
+@dataclass
+class AddMemberResult:
+    member: Member
+    member_token: str
+    replaced: list[StaleMember]
 
 
 def _clamp_bytes(value: int | None) -> int:
@@ -338,6 +357,56 @@ class Database:
                 record_room_closed(room.traffic)
         return purged
 
+    def purge_stale_members(
+        self, stale_after_secs: int | None = None
+    ) -> list[StaleMember]:
+        """Remove non-host members that never reported presence or went silent.
+
+        Covers: join succeeded but tunnel stuck, crash without leave, keepalive miss.
+        Hosts are handled by purge_stale_hosts (whole room).
+        """
+        stale = (
+            stale_after_secs
+            if stale_after_secs is not None
+            else settings.member_stale_secs
+        )
+        if stale <= 0:
+            return []
+        cutoff = _now() - stale
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, room_id, display_name, node_id, virtual_ip
+                FROM members
+                WHERE is_host = 0
+                  AND COALESCE(presence_at, joined_at) < ?
+                """,
+                (cutoff,),
+            ).fetchall()
+            purged = [
+                StaleMember(
+                    id=r["id"],
+                    room_id=r["room_id"],
+                    display_name=r["display_name"],
+                    node_id=r["node_id"],
+                    virtual_ip=r["virtual_ip"],
+                )
+                for r in rows
+            ]
+            for m in purged:
+                conn.execute("DELETE FROM members WHERE id = ?", (m.id,))
+        for m in purged:
+            log_event(
+                "member.purged",
+                room_id=m.room_id,
+                member=m.display_name,
+                member_id=m.id,
+                node_id=m.node_id,
+                virtual_ip=m.virtual_ip,
+                reason="stale",
+            )
+        return purged
+
     def create_room(self, name: str, display_name: str) -> tuple[Room, Member, str, str]:
         """Returns (room, host_member, plaintext_code, member_token)."""
         self.purge_expired()
@@ -477,7 +546,8 @@ class Database:
             member_count=int(r["member_count"]),
         )
 
-    def add_member(self, room_id: str, display_name: str) -> tuple[Member, str]:
+    def add_member(self, room_id: str, display_name: str) -> AddMemberResult:
+        """Insert a guest member; replace any prior non-host rows with the same display name."""
         member_id = str(uuid.uuid4())
         member_token = new_member_token()
         token_hash = hashlib.sha256(member_token.encode()).hexdigest()
@@ -489,6 +559,26 @@ class Database:
             ).fetchone()
             if not room:
                 raise LookupError("房间不存在或已过期")
+            old_rows = conn.execute(
+                """
+                SELECT id, room_id, display_name, node_id, virtual_ip
+                FROM members
+                WHERE room_id = ? AND display_name = ? AND is_host = 0
+                """,
+                (room_id, display_name),
+            ).fetchall()
+            replaced = [
+                StaleMember(
+                    id=r["id"],
+                    room_id=r["room_id"],
+                    display_name=r["display_name"],
+                    node_id=r["node_id"],
+                    virtual_ip=r["virtual_ip"],
+                )
+                for r in old_rows
+            ]
+            for old in replaced:
+                conn.execute("DELETE FROM members WHERE id = ?", (old.id,))
             conn.execute(
                 """
                 INSERT INTO members
@@ -507,7 +597,9 @@ class Database:
             virtual_ip=None,
             presence_at=None,
         )
-        return member, member_token
+        return AddMemberResult(
+            member=member, member_token=member_token, replaced=replaced
+        )
 
     def list_members(self, room_id: str) -> list[Member]:
         with self.connect() as conn:
@@ -640,6 +732,8 @@ class Database:
             member_id=member.id,
             display_name=member.display_name,
             room_deleted=room_deleted,
+            node_id=member.node_id,
+            virtual_ip=member.virtual_ip,
             traffic=traffic if room_deleted else None,
         )
 
@@ -661,6 +755,8 @@ class Database:
             )
         room = self.get_room(room_id)
         room_name = room.name if room else room_id
+        members = self.list_members(room_id)
+        node_ids = [(m.node_id, m.virtual_ip) for m in members]
         with self.connect() as conn:
             traffic = _snapshot_traffic(conn, room_id, reason="dissolved")
             conn.execute("DELETE FROM rooms WHERE id = ?", (room_id,))
@@ -671,5 +767,6 @@ class Database:
             room_name=room_name,
             member_id=member.id,
             display_name=member.display_name,
+            node_ids=node_ids,
             traffic=traffic,
         )

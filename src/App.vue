@@ -39,9 +39,7 @@ const showLobby = computed(
 );
 const showTransit = computed(
   () =>
-    phase.value === "connecting" ||
-    phase.value === "disconnecting" ||
-    (!!session.value && phase.value !== "connected"),
+    phase.value === "connecting" || phase.value === "disconnecting",
 );
 
 const selfIp = computed(() => status.value?.selfIps?.[0] ?? "");

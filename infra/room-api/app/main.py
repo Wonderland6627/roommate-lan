@@ -20,7 +20,7 @@ from .db import (
     validate_room_name,
     validate_virtual_ip,
 )
-from .headscale import mint_auth_key
+from .headscale import delete_node_best_effort, mint_auth_key
 from .rate_limit import RateLimiter
 from .settings import settings
 
@@ -29,15 +29,27 @@ limiter = RateLimiter(settings.rate_limit_per_minute)
 join_fail_limiter = RateLimiter(settings.join_fail_limit_per_minute)
 
 
-def _run_purges() -> None:
+async def _cleanup_nodes(
+    pairs: list[tuple[str | None, str | None]],
+) -> None:
+    for node_id, virtual_ip in pairs:
+        if not node_id and not virtual_ip:
+            continue
+        await delete_node_best_effort(node_id, virtual_ip)
+
+
+def _run_purges() -> list[tuple[str | None, str | None]]:
     db.purge_expired()
     db.purge_stale_hosts()
+    stale_members = db.purge_stale_members()
+    return [(m.node_id, m.virtual_ip) for m in stale_members]
 
 
 async def _ttl_loop() -> None:
     while True:
         try:
-            _run_purges()
+            nodes = await asyncio.to_thread(_run_purges)
+            await _cleanup_nodes(nodes)
         except Exception as e:
             log_event("purge.failed", level=logging.ERROR, error=e)
         await asyncio.sleep(60)
@@ -53,6 +65,8 @@ async def lifespan(_app: FastAPI):
         room_ttl_h=settings.room_ttl_hours,
         authkey_ttl_h=settings.authkey_ttl_hours,
         host_stale_secs=settings.host_stale_secs,
+        member_stale_secs=settings.member_stale_secs,
+        authkey_ephemeral=settings.authkey_ephemeral,
         log_dir=settings.log_dir,
     )
     task = asyncio.create_task(_ttl_loop())
@@ -236,7 +250,7 @@ async def join_room(body: JoinBody, request: Request) -> dict[str, Any]:
         raise HTTPException(502, f"无法签发进网凭证: {e}") from e
 
     try:
-        member, member_token = db.add_member(room.id, display)
+        added = db.add_member(room.id, display)
     except LookupError as e:
         log_event(
             "join.rejected",
@@ -248,6 +262,21 @@ async def join_room(body: JoinBody, request: Request) -> dict[str, Any]:
         )
         raise HTTPException(401, str(e)) from e
 
+    member = added.member
+    member_token = added.member_token
+    if added.replaced:
+        for old in added.replaced:
+            log_event(
+                "member.replaced",
+                room_id=room.id,
+                name=room.name,
+                member=old.display_name,
+                old_member_id=old.id,
+                new_member_id=member.id,
+                ip=ip,
+            )
+        await _cleanup_nodes([(m.node_id, m.virtual_ip) for m in added.replaced])
+
     room = db.get_room(room.id) or room
     log_event(
         "member.joined",
@@ -255,6 +284,7 @@ async def join_room(body: JoinBody, request: Request) -> dict[str, Any]:
         name=room.name,
         member=member.display_name,
         member_id=member.id,
+        replaced=len(added.replaced),
         ip=ip,
     )
     return {
@@ -339,7 +369,9 @@ def report_presence(
 
 
 @app.post("/api/rooms/{room_id}/leave")
-def leave_room(room_id: str, body: TokenBody, request: Request) -> dict[str, str]:
+async def leave_room(
+    room_id: str, body: TokenBody, request: Request
+) -> dict[str, str]:
     ip = _client_ip(request)
     if not limiter.allow(f"leave:{ip}"):
         log_event("rate_limited", level=logging.WARNING, action="leave", ip=ip)
@@ -376,11 +408,14 @@ def leave_room(room_id: str, body: TokenBody, request: Request) -> dict[str, str
             name=result.room_name,
             reason="empty_after_leave",
         )
+    await delete_node_best_effort(result.node_id, result.virtual_ip)
     return {"status": "left"}
 
 
 @app.post("/api/rooms/{room_id}/dissolve")
-def dissolve_room(room_id: str, body: TokenBody, request: Request) -> dict[str, str]:
+async def dissolve_room(
+    room_id: str, body: TokenBody, request: Request
+) -> dict[str, str]:
     ip = _client_ip(request)
     if not limiter.allow(f"dissolve:{ip}"):
         log_event("rate_limited", level=logging.WARNING, action="dissolve", ip=ip)
@@ -409,4 +444,6 @@ def dissolve_room(room_id: str, body: TokenBody, request: Request) -> dict[str, 
         member_id=result.member_id,
         ip=ip,
     )
+    if result.node_ids:
+        await _cleanup_nodes(result.node_ids)
     return {"status": "dissolved"}

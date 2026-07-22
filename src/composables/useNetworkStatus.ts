@@ -33,6 +33,9 @@ const PING_MS = 5000;
 const LOBBY_MS = 5000;
 const MEMBERS_MS = 3000;
 const PRESENCE_REFRESH_MS = 60_000;
+/** Must exceed service-side tailscale up (~45s) + Running/IP wait. */
+const CONNECT_TIMEOUT_MS = 60_000;
+const ROOM_CLEANUP_RETRIES = 3;
 
 const LS_DISPLAY = "roommate.displayName";
 const LS_CODE = "roommate.lastCode";
@@ -76,6 +79,77 @@ export function useNetworkStatus() {
     relayBytesAccum = 0;
     p2pBytesAccum = 0;
     lastPeerBytes.clear();
+  }
+
+  function withTimeout<T>(
+    promise: Promise<T>,
+    ms: number,
+    message: string,
+  ): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => reject(new Error(message)), ms);
+      promise.then(
+        (value) => {
+          window.clearTimeout(timer);
+          resolve(value);
+        },
+        (err) => {
+          window.clearTimeout(timer);
+          reject(err);
+        },
+      );
+    });
+  }
+
+  function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      window.setTimeout(resolve, ms);
+    });
+  }
+
+  async function withRetries(
+    action: () => Promise<void>,
+    attempts: number,
+  ): Promise<void> {
+    let lastError: unknown;
+    for (let i = 0; i < attempts; i++) {
+      try {
+        await action();
+        return;
+      } catch (e) {
+        lastError = e;
+        if (i + 1 < attempts) {
+          await sleep(300 * (i + 1));
+        }
+      }
+    }
+    throw lastError instanceof Error
+      ? lastError
+      : new Error(String(lastError));
+  }
+
+  async function cleanupRoomSeat(
+    creds: RoomCredentials,
+    traffic: TrafficReport,
+  ): Promise<void> {
+    if (!bootstrapUrl.value) return;
+    await withRetries(async () => {
+      if (creds.isHost) {
+        await dissolveRoom(
+          bootstrapUrl.value,
+          creds.room.id,
+          creds.memberToken,
+          traffic,
+        );
+      } else {
+        await leaveRoom(
+          bootstrapUrl.value,
+          creds.room.id,
+          creds.memberToken,
+          traffic,
+        );
+      }
+    }, ROOM_CLEANUP_RETRIES);
   }
 
   function currentTraffic(): TrafficReport {
@@ -283,35 +357,34 @@ export function useNetworkStatus() {
     resetTrafficAccum();
     stopLobbyPolling();
     try {
-      await apiConnect({
-        loginServer: creds.loginServer,
-        authKey: creds.authKey,
-      });
+      await withTimeout(
+        apiConnect({
+          loginServer: creds.loginServer,
+          authKey: creds.authKey,
+        }),
+        CONNECT_TIMEOUT_MS,
+        "隧道建立超时，请稍后重试",
+      );
       phase.value = "connected";
       startPolling();
       startMembersPolling();
     } catch (e) {
+      const connectMsg = e instanceof Error ? e.message : String(e);
+      let cleanupFailed = false;
       try {
-        if (creds.isHost) {
-          await dissolveRoom(
-            bootstrapUrl.value,
-            creds.room.id,
-            creds.memberToken,
-            currentTraffic(),
-          );
-        } else {
-          await leaveRoom(
-            bootstrapUrl.value,
-            creds.room.id,
-            creds.memberToken,
-            currentTraffic(),
-          );
-        }
+        await cleanupRoomSeat(creds, currentTraffic());
       } catch {
-        // ignore cleanup errors
+        cleanupFailed = true;
+      }
+      try {
+        await apiDisconnect();
+      } catch {
+        // best-effort local teardown after failed connect
       }
       phase.value = "error";
-      error.value = e instanceof Error ? e.message : String(e);
+      error.value = cleanupFailed
+        ? `${connectMsg}（房间席位可能仍占用，请稍后再试或换显示名）`
+        : connectMsg;
       session.value = null;
       members.value = [];
       lastReportedKey.value = "";
@@ -423,21 +496,7 @@ export function useNetworkStatus() {
     let roomErr: string | null = null;
     try {
       if (bootstrapUrl.value) {
-        if (current.isHost) {
-          await dissolveRoom(
-            bootstrapUrl.value,
-            current.room.id,
-            current.memberToken,
-            traffic,
-          );
-        } else {
-          await leaveRoom(
-            bootstrapUrl.value,
-            current.room.id,
-            current.memberToken,
-            traffic,
-          );
-        }
+        await cleanupRoomSeat(current, traffic);
       }
     } catch (e) {
       roomErr = e instanceof Error ? e.message : String(e);
@@ -452,12 +511,25 @@ export function useNetworkStatus() {
     }
 
     try {
-      await apiDisconnect();
+      await withTimeout(
+        apiDisconnect(),
+        30_000,
+        "断开隧道超时，请稍后重试或重启应用",
+      );
     } catch (e) {
       if (!opts?.force) {
+        // Room seat already cleared; drop local session so UI is not stuck in transit.
+        session.value = null;
+        members.value = [];
+        status.value = null;
+        latencies.value = {};
+        lastReportedKey.value = "";
+        lastPresenceAt.value = 0;
+        resetTrafficAccum();
         phase.value = "error";
         error.value = e instanceof Error ? e.message : String(e);
         busyAction.value = false;
+        startLobbyPolling();
         return;
       }
     }

@@ -32,7 +32,8 @@ derp:
   update_frequency: 24h
 
 # Ephemeral nodes expire after disconnect (optional; set 0 to disable).
-ephemeral_node_inactivity_timeout: 30m
+# Keep short so leave+rejoin can reclaim /24 addresses without waiting half an hour.
+ephemeral_node_inactivity_timeout: 5m
 
 dns:
   magic_dns: false
