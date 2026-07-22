@@ -27,7 +27,10 @@ fn main() {
                 );
                 continue;
             }
-            if key == "ROOMMATE_LOGIN_SERVER" || key == "ROOMMATE_AUTH_KEY" {
+            if key == "ROOMMATE_LOGIN_SERVER"
+                || key == "ROOMMATE_AUTH_KEY"
+                || key == "ROOMMATE_BOOTSTRAP_URL"
+            {
                 if std::env::var(key).is_err() {
                     // Actual embedding uses option_env! from cargo:rustc-env below.
                     println!("cargo:rustc-env={key}={value}");
@@ -42,6 +45,11 @@ fn main() {
             println!("cargo:rustc-env=ROOMMATE_LOGIN_SERVER={server}");
         }
     }
+    if let Ok(bootstrap) = std::env::var("ROOMMATE_BOOTSTRAP_URL") {
+        if !bootstrap.is_empty() {
+            println!("cargo:rustc-env=ROOMMATE_BOOTSTRAP_URL={bootstrap}");
+        }
+    }
     if public_release {
         // Ensure AuthKey is not accidentally injected via the process environment.
         println!("cargo:rustc-env=ROOMMATE_AUTH_KEY=");
@@ -53,6 +61,7 @@ fn main() {
 
     println!("cargo:rerun-if-changed=../.env");
     println!("cargo:rerun-if-env-changed=ROOMMATE_LOGIN_SERVER");
+    println!("cargo:rerun-if-env-changed=ROOMMATE_BOOTSTRAP_URL");
     println!("cargo:rerun-if-env-changed=ROOMMATE_AUTH_KEY");
     println!("cargo:rerun-if-env-changed=ROOMMATE_PUBLIC_RELEASE");
 

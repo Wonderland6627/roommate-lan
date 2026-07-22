@@ -39,11 +39,24 @@ impl TailscaleCli {
         self.run_args(&["version"], Duration::from_secs(15))
     }
 
-    pub fn up(&self, hostname: &str) -> Result<String, String> {
-        let login = config::login_server();
-        let key = config::auth_key();
+    pub fn up(
+        &self,
+        hostname: &str,
+        login_server: Option<&str>,
+        auth_key: Option<&str>,
+    ) -> Result<String, String> {
+        let login = login_server
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(config::login_server);
+        let key = auth_key
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(config::auth_key);
         if key.contains("replace-me") || key.is_empty() {
-            return Err("未配置 AuthKey。请在 .env 设置 ROOMMATE_AUTH_KEY".into());
+            return Err("未配置进网凭证。请先创建或加入房间。".into());
         }
 
         let host = if hostname.trim().is_empty() {

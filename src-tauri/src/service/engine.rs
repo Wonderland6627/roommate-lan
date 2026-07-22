@@ -54,7 +54,11 @@ impl NetworkEngine {
         self.touch();
         match req.op {
             Op::Health => self.health(),
-            Op::Connect => self.connect(req.hostname.as_deref().unwrap_or("")),
+            Op::Connect => self.connect(
+                req.hostname.as_deref().unwrap_or(""),
+                req.login_server.as_deref(),
+                req.auth_key.as_deref(),
+            ),
             Op::Disconnect => self.disconnect(),
             Op::Status => self.status(),
             Op::Ping => self.ping(req.ip.as_deref().unwrap_or("")),
@@ -71,8 +75,13 @@ impl NetworkEngine {
         Response::health(true, connected)
     }
 
-    fn connect(&self, hostname: &str) -> Response {
-        match self.connect_inner(hostname) {
+    fn connect(
+        &self,
+        hostname: &str,
+        login_server: Option<&str>,
+        auth_key: Option<&str>,
+    ) -> Response {
+        match self.connect_inner(hostname, login_server, auth_key) {
             Ok(msg) => {
                 *self.connected.lock().unwrap_or_else(|e| e.into_inner()) = true;
                 self.touch();
@@ -82,11 +91,16 @@ impl NetworkEngine {
         }
     }
 
-    fn connect_inner(&self, hostname: &str) -> Result<String, String> {
+    fn connect_inner(
+        &self,
+        hostname: &str,
+        login_server: Option<&str>,
+        auth_key: Option<&str>,
+    ) -> Result<String, String> {
         let state_dir = config::state_dir();
         self.daemon.start(&self.paths, &state_dir)?;
         let cli = TailscaleCli::from_paths(&self.paths);
-        cli.up(hostname)
+        cli.up(hostname, login_server, auth_key)
     }
 
     fn disconnect(&self) -> Response {

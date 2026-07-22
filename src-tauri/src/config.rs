@@ -77,6 +77,22 @@ pub fn login_server() -> String {
         .to_string()
 }
 
+/// Base URL for Room API (same host as Headscale by default).
+pub fn bootstrap_url() -> String {
+    load_dotenv();
+    if let Ok(v) = std::env::var("ROOMMATE_BOOTSTRAP_URL") {
+        if !v.is_empty() {
+            return v.trim_end_matches('/').to_string();
+        }
+    }
+    if let Some(v) = option_env!("ROOMMATE_BOOTSTRAP_URL") {
+        if !v.is_empty() {
+            return v.trim_end_matches('/').to_string();
+        }
+    }
+    login_server().trim_end_matches('/').to_string()
+}
+
 pub fn auth_key() -> String {
     load_dotenv();
     if let Ok(v) = std::env::var("ROOMMATE_AUTH_KEY") {
@@ -85,7 +101,7 @@ pub fn auth_key() -> String {
         }
     }
     option_env!("ROOMMATE_AUTH_KEY")
-        .unwrap_or("tskey-auth-replace-me")
+        .unwrap_or("")
         .to_string()
 }
 

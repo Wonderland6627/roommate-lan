@@ -1,23 +1,26 @@
 # Phase 6 扩展功能规划
 
-实施顺序：**B → C → A**。
+实施顺序：**B（进行中）→ C → A**。
 
 ## 扩展 B：动态房间口令 / AuthKey
 
-**目标**：房主生成短期口令或二维码，队友输入后自动换取 preauth key 并 `tailscale up`。
+**目标**：房主生成短期口令，队友输入后自动换取 preauth key 并 `tailscale up`。
 
-**后端（建议与 Headscale 同机，Caddy 反代）**
+### 已落地（MVP）
 
-- `POST /api/rooms` → 创建房间，调用 `headscale preauthkeys create --expiration 2h`
-- `POST /api/rooms/join` → `{ code }` 校验后返回 `{ loginServer, authKey }`
-- 口令存储：SQLite + TTL；用完可作废（非 reusable）
+- [`infra/room-api/`](../infra/room-api/)：创建 / 列表 / 加入 / 成员 / 退出 / 解散 + TTL
+- 4 位 A–Z 短码（校验忽略大小写）；创建时填房间名与显示名
+- 公开 Release 只内嵌 Login Server；AuthKey 由 Room API 短期签发
+- 客户端：大厅列表 + 创建/加入；房内成员显示名；房主解散 / 队友退出
+- **弱化生命周期**：无心跳；强杀残留成员靠房间 TTL 回收
 
-**客户端**
+### 后续（未做）
 
-- 连接前增加「口令」输入；覆盖编译期默认 AuthKey
-- 二维码：口令字符串或 `roommate://join?code=`
+- 二维码 / `roommate://join?code=`
+- 成员心跳 / 对照 Headscale 在线清理幽灵成员
+- 网络 ACL「仅房主可…」
 
-**依赖**：Headscale API/CLI 权限、HTTPS、防爆破（rate limit）
+**依赖**：Headscale API key、HTTPS、限流
 
 ---
 

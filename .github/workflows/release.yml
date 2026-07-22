@@ -82,7 +82,7 @@ jobs:
 
             Windows x64 NSIS installer + signed updater artifacts.
 
-            **Note:** Public builds do not embed `ROOMMATE_AUTH_KEY`. Place a local `.env` next to the install (or use a future device-auth flow) to connect.
+            **Note:** Public builds do not embed `ROOMMATE_AUTH_KEY`. Create or join a room in the app (requires Room API on your Headscale host). `ROOMMATE_LOGIN_SERVER` should be injected at build time.
           releaseDraft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           updaterJsonPreferNsis: true

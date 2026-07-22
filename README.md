@@ -17,7 +17,7 @@
 ## 快速开始（客户端）
 
 ```powershell
-# 1. 配置 Headscale 地址与 AuthKey（勿提交）
+# 1. 配置 Headscale / Room API 地址（公开包由 CI 注入；开发机写 .env）
 copy .env.example .env
 
 # 2. 依赖与 Sidecar（含 wintun.dll）
@@ -74,7 +74,9 @@ npm run tauri signer generate -- -w src-tauri/keys/updater.key
 ### AuthKey 门禁
 
 公开 Release **不会**编译进长期 `ROOMMATE_AUTH_KEY`（可从安装包提取）。CI 设置 `ROOMMATE_PUBLIC_RELEASE=1`。
-用户连接需在安装目录旁放置本地 `.env`，或等待后续设备授权流程。
+用户通过 App **创建 / 加入房间**，由服务端 Room API 签发短期 AuthKey；只需保证构建时注入 `ROOMMATE_LOGIN_SERVER`（与 Headscale / `/api` 同域）。
+
+开发机仍可用本地 `.env` 的 `ROOMMATE_AUTH_KEY` 作兜底。
 
 ### 打标签发布
 
@@ -92,11 +94,12 @@ git push origin v0.3.0
 
 ## 服务端
 
-见 [`infra/README.md`](infra/README.md)。部署后把 `ROOMMATE_LOGIN_SERVER` / `ROOMMATE_AUTH_KEY` 写入客户端 `.env`。
+见 [`infra/README.md`](infra/README.md)。部署 Headscale + Room API 后，把 `ROOMMATE_LOGIN_SERVER` 写入客户端构建环境（CI secret）。
 
 ## MVP 功能
 
-- 一键连接 / 断开（预嵌 AuthKey；经网络服务，无窗口闪烁）
+- 创建房间 / 加入房间（4 位短码、房间列表、显示名；经网络服务，无窗口闪烁）
+- 房内成员显示名；房主解散 / 队友退出；房间 TTL
 - 队友列表、一键复制虚拟 IP
 - P2P vs 腾讯云 DERP 状态徽章
 - Peer RTT（`tailscale ping`）
@@ -104,7 +107,8 @@ git push origin v0.3.0
 - 应用内版本显示与签名更新（检查 → 下载 → 安装 → 重启）
 
 验收清单：[`docs/mvp-validation.md`](docs/mvp-validation.md)  
-扩展规划：[`docs/extensions.md`](docs/extensions.md)
+扩展规划：[`docs/extensions.md`](docs/extensions.md)  
+宝塔补丁部署（上传、不 git）：[`docs/deploy-baota-beijing.md`](docs/deploy-baota-beijing.md)
 
 ## 许可注意
 

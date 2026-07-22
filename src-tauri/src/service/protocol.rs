@@ -26,6 +26,10 @@ pub struct Request {
     pub hostname: Option<String>,
     #[serde(default)]
     pub ip: Option<String>,
+    #[serde(default)]
+    pub login_server: Option<String>,
+    #[serde(default)]
+    pub auth_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,6 +149,20 @@ pub fn validate_request(req: &Request) -> Result<(), String> {
                     return Err("非法 hostname".into());
                 }
             }
+            if let Some(key) = &req.auth_key {
+                if key.len() > 512 || key.chars().any(|c| c.is_control()) {
+                    return Err("非法 AuthKey".into());
+                }
+            }
+            if let Some(server) = &req.login_server {
+                let s = server.trim();
+                if s.len() > 256
+                    || !(s.starts_with("https://") || s.starts_with("http://"))
+                    || s.chars().any(|c| c.is_whitespace() || c.is_control())
+                {
+                    return Err("非法 login server".into());
+                }
+            }
         }
         _ => {}
     }
@@ -162,6 +180,8 @@ mod tests {
             op: Op::Health,
             hostname: None,
             ip: None,
+            login_server: None,
+            auth_key: None,
         };
         let bytes = encode_message(&req).unwrap();
         assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize, bytes.len() - 4);
@@ -176,6 +196,8 @@ mod tests {
             op: Op::Health,
             hostname: None,
             ip: None,
+            login_server: None,
+            auth_key: None,
         };
         assert!(validate_request(&req).is_err());
     }
@@ -187,6 +209,8 @@ mod tests {
             op: Op::Ping,
             hostname: None,
             ip: Some("1.1.1.1 && calc".into()),
+            login_server: None,
+            auth_key: None,
         };
         assert!(validate_request(&req).is_err());
     }

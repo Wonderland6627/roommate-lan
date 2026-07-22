@@ -1,8 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { NetworkStatusDto } from "../types/network";
 
-export async function apiConnect(): Promise<string> {
-  return invoke<string>("connect");
+export async function apiConnect(opts?: {
+  loginServer?: string;
+  authKey?: string;
+}): Promise<string> {
+  return invoke<string>("connect", {
+    loginServer: opts?.loginServer ?? null,
+    authKey: opts?.authKey ?? null,
+  });
 }
 
 export async function apiDisconnect(): Promise<string> {
@@ -23,4 +29,8 @@ export async function apiIsAdmin(): Promise<boolean> {
 
 export async function apiSidecarVersion(): Promise<string> {
   return invoke<string>("sidecar_version");
+}
+
+export async function apiBootstrapUrl(): Promise<string> {
+  return invoke<string>("bootstrap_url");
 }

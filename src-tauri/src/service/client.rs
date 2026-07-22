@@ -12,6 +12,17 @@ impl ServiceClient {
         Self
     }
 
+    fn req(op: Op) -> Request {
+        Request {
+            v: config::PROTOCOL_VERSION,
+            op,
+            hostname: None,
+            ip: None,
+            login_server: None,
+            auth_key: None,
+        }
+    }
+
     #[cfg(windows)]
     fn call(&self, req: Request) -> Result<Response, String> {
         crate::service::pipe::client_transact(&req)
@@ -23,12 +34,7 @@ impl ServiceClient {
     }
 
     pub fn health(&self) -> Result<Response, String> {
-        let resp = self.call(Request {
-            v: config::PROTOCOL_VERSION,
-            op: Op::Health,
-            hostname: None,
-            ip: None,
-        })?;
+        let resp = self.call(Self::req(Op::Health))?;
         if !resp.ok {
             return Err(resp.error.unwrap_or_else(|| "健康检查失败".into()));
         }
@@ -46,14 +52,24 @@ impl ServiceClient {
         self.health().map(|r| r.ready.unwrap_or(false)).unwrap_or(false)
     }
 
-    pub fn connect(&self, hostname: &str) -> Result<String, String> {
+    pub fn connect(
+        &self,
+        hostname: &str,
+        login_server: Option<&str>,
+        auth_key: Option<&str>,
+    ) -> Result<String, String> {
         let _ = self.health()?;
-        let resp = self.call(Request {
-            v: config::PROTOCOL_VERSION,
-            op: Op::Connect,
-            hostname: Some(hostname.to_string()),
-            ip: None,
-        })?;
+        let mut req = Self::req(Op::Connect);
+        req.hostname = Some(hostname.to_string());
+        req.login_server = login_server
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        req.auth_key = auth_key
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let resp = self.call(req)?;
         if !resp.ok {
             return Err(resp.error.unwrap_or_else(|| "连接失败".into()));
         }
@@ -61,12 +77,7 @@ impl ServiceClient {
     }
 
     pub fn disconnect(&self) -> Result<String, String> {
-        let resp = self.call(Request {
-            v: config::PROTOCOL_VERSION,
-            op: Op::Disconnect,
-            hostname: None,
-            ip: None,
-        })?;
+        let resp = self.call(Self::req(Op::Disconnect))?;
         if !resp.ok {
             return Err(resp.error.unwrap_or_else(|| "断开失败".into()));
         }
@@ -74,12 +85,7 @@ impl ServiceClient {
     }
 
     pub fn status(&self) -> Result<NetworkStatus, String> {
-        let resp = self.call(Request {
-            v: config::PROTOCOL_VERSION,
-            op: Op::Status,
-            hostname: None,
-            ip: None,
-        })?;
+        let resp = self.call(Self::req(Op::Status))?;
         if !resp.ok {
             return Err(resp.error.unwrap_or_else(|| "无法读取状态".into()));
         }
@@ -87,12 +93,9 @@ impl ServiceClient {
     }
 
     pub fn ping(&self, ip: &str) -> Result<u32, String> {
-        let resp = self.call(Request {
-            v: config::PROTOCOL_VERSION,
-            op: Op::Ping,
-            hostname: None,
-            ip: Some(ip.to_string()),
-        })?;
+        let mut req = Self::req(Op::Ping);
+        req.ip = Some(ip.to_string());
+        let resp = self.call(req)?;
         if !resp.ok {
             return Err(resp.error.unwrap_or_else(|| "ping 失败".into()));
         }
@@ -100,12 +103,7 @@ impl ServiceClient {
     }
 
     pub fn version(&self) -> Result<String, String> {
-        let resp = self.call(Request {
-            v: config::PROTOCOL_VERSION,
-            op: Op::Version,
-            hostname: None,
-            ip: None,
-        })?;
+        let resp = self.call(Self::req(Op::Version))?;
         if !resp.ok {
             return Err(resp.error.unwrap_or_else(|| "版本查询失败".into()));
         }
@@ -113,12 +111,7 @@ impl ServiceClient {
     }
 
     pub fn heartbeat(&self) -> Result<(), String> {
-        let resp = self.call(Request {
-            v: config::PROTOCOL_VERSION,
-            op: Op::Heartbeat,
-            hostname: None,
-            ip: None,
-        })?;
+        let resp = self.call(Self::req(Op::Heartbeat))?;
         if !resp.ok {
             return Err(resp.error.unwrap_or_else(|| "心跳失败".into()));
         }

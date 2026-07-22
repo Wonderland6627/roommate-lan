@@ -13,7 +13,15 @@ pub fn network_service_ready() -> bool {
 }
 
 #[tauri::command]
-pub async fn connect() -> Result<String, String> {
+pub fn bootstrap_url() -> String {
+    config::bootstrap_url()
+}
+
+#[tauri::command]
+pub async fn connect(
+    login_server: Option<String>,
+    auth_key: Option<String>,
+) -> Result<String, String> {
     let client = ServiceClient::new();
     let health = client.health().map_err(|e| {
         if e.contains("未就绪") || e.contains("无法连接") {
@@ -25,7 +33,11 @@ pub async fn connect() -> Result<String, String> {
     if health.ready != Some(true) {
         return Err("网络服务未就绪，请修复安装或运行 scripts/dev-service.ps1".into());
     }
-    client.connect(&config::hostname())
+    client.connect(
+        &config::hostname(),
+        login_server.as_deref(),
+        auth_key.as_deref(),
+    )
 }
 
 #[tauri::command]

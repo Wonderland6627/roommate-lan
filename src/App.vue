@@ -1,17 +1,41 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import ConnectButton from "./components/ConnectButton.vue";
 import PeerList from "./components/PeerList.vue";
+import RoomLobby from "./components/RoomLobby.vue";
+import RoomSession from "./components/RoomSession.vue";
 import StatusBar from "./components/StatusBar.vue";
 import UpdateStatus from "./components/UpdateStatus.vue";
 import { useNetworkStatus } from "./composables/useNetworkStatus";
 
-const { phase, error, status, isAdmin, connect, disconnect, peerLatency } =
-  useNetworkStatus();
+const {
+  phase,
+  error,
+  status,
+  isAdmin,
+  rooms,
+  members,
+  session,
+  displayName,
+  roomName,
+  joinCode,
+  selectedRoomId,
+  busyAction,
+  createAndConnect,
+  joinAndConnect,
+  selectRoom,
+  leaveOrDissolve,
+  peerLatency,
+  refreshRooms,
+} = useNetworkStatus();
 
 const busy = computed(
-  () => phase.value === "connecting" || phase.value === "disconnecting",
+  () =>
+    busyAction.value ||
+    phase.value === "connecting" ||
+    phase.value === "disconnecting",
 );
+
+const inRoom = computed(() => !!session.value && phase.value === "connected");
 </script>
 
 <template>
@@ -20,13 +44,33 @@ const busy = computed(
       <p class="brand">Roommate-LAN</p>
     </header>
 
-    <ConnectButton
+    <RoomLobby
+      v-if="!inRoom"
       class="animate-fade-up"
       style="animation-delay: 0.05s"
-      :phase="phase"
+      :rooms="rooms"
+      :room-name="roomName"
+      :display-name="displayName"
+      :join-code="joinCode"
+      :selected-room-id="selectedRoomId"
       :busy="busy"
-      @connect="connect"
-      @disconnect="disconnect"
+      @update:room-name="roomName = $event"
+      @update:display-name="displayName = $event"
+      @update:join-code="joinCode = $event"
+      @select="selectRoom"
+      @create="createAndConnect"
+      @join="joinAndConnect"
+      @refresh="refreshRooms"
+    />
+
+    <RoomSession
+      v-else-if="session"
+      class="animate-fade-up"
+      style="animation-delay: 0.05s"
+      :session="session"
+      :members="members"
+      :busy="busy"
+      @leave="leaveOrDissolve"
     />
 
     <p v-if="error" class="error animate-fade-up" role="alert">{{ error }}</p>

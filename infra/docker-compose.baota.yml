@@ -3,6 +3,7 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.baota.yml up -d
 #
+# Nginx 需额外反代 /api/ 与 room health 到 room-api（见 infra/README.md）。
 
 services:
   caddy:
@@ -12,3 +13,7 @@ services:
   headscale:
     ports:
       - "127.0.0.1:8080:8080"
+
+  room-api:
+    ports:
+      - "127.0.0.1:8081:8081"

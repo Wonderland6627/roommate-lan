@@ -22,6 +22,28 @@ services:
       retries: 3
       start_period: 15s
 
+  room-api:
+    build: ./room-api
+    container_name: roommate-room-api
+    restart: unless-stopped
+    environment:
+      LOGIN_SERVER: https://${HS_DOMAIN}
+      HEADSCALE_API_URL: http://headscale:8080
+      HEADSCALE_API_KEY: ${HEADSCALE_API_KEY:-}
+      HEADSCALE_USER: ${HEADSCALE_USER:-roommate}
+      ROOM_TTL_HOURS: ${ROOM_TTL_HOURS:-4}
+      AUTHKEY_TTL_HOURS: ${AUTHKEY_TTL_HOURS:-2}
+      DATA_DIR: /data
+      MOCK_AUTH_KEY: ${MOCK_AUTH_KEY:-}
+    volumes:
+      - room-api-data:/data
+    depends_on:
+      - headscale
+    expose:
+      - "8081"
+    networks:
+      - roommate-net
+
   caddy:
     image: caddy:2.8-alpine
     container_name: roommate-caddy
@@ -38,6 +60,7 @@ services:
       - caddy-config:/config
     depends_on:
       - headscale
+      - room-api
     networks:
       - roommate-net
 
@@ -69,6 +92,7 @@ services:
 volumes:
   headscale-data:
   headscale-run:
+  room-api-data:
   caddy-data:
   caddy-config:
 

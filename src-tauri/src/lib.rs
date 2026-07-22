@@ -6,7 +6,8 @@ pub mod tailscale;
 use tauri::RunEvent;
 
 use commands::{
-    connect, disconnect, get_status, is_admin, network_service_ready, ping_peer, sidecar_version,
+    bootstrap_url, connect, disconnect, get_status, is_admin, network_service_ready, ping_peer,
+    sidecar_version,
 };
 use service::ServiceClient;
 
@@ -28,6 +29,7 @@ pub fn run() {
             is_admin,
             network_service_ready,
             sidecar_version,
+            bootstrap_url,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

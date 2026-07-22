@@ -47,6 +47,8 @@ fn run_service_body() -> Result<(), String> {
                     op: crate::service::protocol::Op::Health,
                     hostname: None,
                     ip: None,
+                    login_server: None,
+                    auth_key: None,
                 });
                 ServiceControlHandlerResult::NoError
             }
@@ -119,6 +121,8 @@ fn run_service_body() -> Result<(), String> {
             op: crate::service::protocol::Op::Health,
             hostname: None,
             ip: None,
+            login_server: None,
+            auth_key: None,
         });
     }
     for w in workers {
