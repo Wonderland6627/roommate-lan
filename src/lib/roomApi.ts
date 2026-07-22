@@ -11,6 +11,8 @@ export type RoomMember = {
   displayName: string;
   isHost: boolean;
   joinedAt: number;
+  nodeId?: string | null;
+  virtualIp?: string | null;
 };
 
 export type RoomCredentials = {
@@ -19,6 +21,7 @@ export type RoomCredentials = {
   loginServer: string;
   authKey: string;
   memberToken: string;
+  memberId?: string;
   isHost: boolean;
   room: RoomSummary;
 };
@@ -95,6 +98,21 @@ export async function listMembers(
   roomId: string,
 ): Promise<{ room: RoomSummary; members: RoomMember[] }> {
   return request(baseUrl, `/api/rooms/${encodeURIComponent(roomId)}/members`);
+}
+
+export async function reportPresence(
+  baseUrl: string,
+  roomId: string,
+  opts: { memberToken: string; nodeId: string; virtualIp: string },
+): Promise<void> {
+  await request(baseUrl, `/api/rooms/${encodeURIComponent(roomId)}/presence`, {
+    method: "POST",
+    body: JSON.stringify({
+      memberToken: opts.memberToken,
+      nodeId: opts.nodeId,
+      virtualIp: opts.virtualIp,
+    }),
+  });
 }
 
 export async function leaveRoom(

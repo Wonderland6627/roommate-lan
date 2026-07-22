@@ -20,6 +20,7 @@ export interface PeerView {
 
 export interface NetworkStatusDto {
   backendState: string;
+  selfId: string;
   selfIps: string[];
   selfHostname: string;
   peers: PeerView[];
@@ -31,3 +32,13 @@ export type ConnectionPhase =
   | "connected"
   | "disconnecting"
   | "error";
+
+export type MemberNetKind = ConnKind | "self" | "pending";
+
+export interface MemberNetInfo {
+  kind: MemberNetKind;
+  relay?: string | null;
+  latencyMs: number | null;
+  virtualIp: string | null;
+  isSelf: boolean;
+}

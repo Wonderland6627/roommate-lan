@@ -6,6 +6,7 @@ import {
   leaveRoom,
   listMembers,
   listRooms,
+  reportPresence,
   type RoomCredentials,
   type RoomMember,
   type RoomSummary,
@@ -20,8 +21,8 @@ import {
 } from "../lib/tauri";
 import type {
   ConnectionPhase,
+  MemberNetInfo,
   NetworkStatusDto,
-  PeerView,
 } from "../types/network";
 
 const STATUS_MS = 2000;
@@ -46,8 +47,8 @@ export function useNetworkStatus() {
   const displayName = ref(localStorage.getItem(LS_DISPLAY) ?? "");
   const roomName = ref("");
   const joinCode = ref(localStorage.getItem(LS_CODE) ?? "");
-  const selectedRoomId = ref<string | null>(null);
   const busyAction = ref(false);
+  const lastReportedKey = ref("");
 
   let statusTimer: ReturnType<typeof setInterval> | null = null;
   let pingTimer: ReturnType<typeof setInterval> | null = null;
@@ -87,12 +88,38 @@ export function useNetworkStatus() {
     }
   }
 
+  async function maybeReportPresence() {
+    const current = session.value;
+    const st = status.value;
+    if (!current || !bootstrapUrl.value || !st) return;
+    if (phase.value !== "connected") return;
+
+    const nodeId = st.selfId?.trim();
+    const virtualIp = st.selfIps?.[0]?.trim();
+    if (!nodeId || !virtualIp) return;
+
+    const key = `${current.room.id}:${nodeId}:${virtualIp}`;
+    if (key === lastReportedKey.value) return;
+
+    try {
+      await reportPresence(bootstrapUrl.value, current.room.id, {
+        memberToken: current.memberToken,
+        nodeId,
+        virtualIp,
+      });
+      lastReportedKey.value = key;
+    } catch {
+      // presence is best-effort; members poll will stay without IP until retry
+    }
+  }
+
   async function pullStatus() {
     try {
       const next = await apiGetStatus();
       status.value = next;
       if (phase.value === "connected") {
         error.value = null;
+        await maybeReportPresence();
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -103,16 +130,24 @@ export function useNetworkStatus() {
   }
 
   async function pullPings() {
-    const peers = status.value?.peers ?? [];
-    const online = peers.filter((p) => p.online && p.ips[0]);
+    const current = session.value;
+    if (!current || phase.value !== "connected") return;
+
+    const targets = members.value.filter(
+      (m) =>
+        m.id !== current.memberId &&
+        !!m.virtualIp &&
+        m.virtualIp.trim().length > 0,
+    );
+
     await Promise.all(
-      online.map(async (peer) => {
-        const ip = peer.ips[0];
+      targets.map(async (member) => {
+        const ip = member.virtualIp!.trim();
         try {
           const ms = await apiPingPeer(ip);
-          latencies.value = { ...latencies.value, [peer.id]: ms };
+          latencies.value = { ...latencies.value, [member.id]: ms };
         } catch {
-          // ignore single-peer ping failures
+          // ignore single-member ping failures
         }
       }),
     );
@@ -164,6 +199,7 @@ export function useNetworkStatus() {
     joinCode.value = creds.code;
     phase.value = "connecting";
     error.value = null;
+    lastReportedKey.value = "";
     stopLobbyPolling();
     try {
       await apiConnect({
@@ -187,6 +223,7 @@ export function useNetworkStatus() {
       error.value = e instanceof Error ? e.message : String(e);
       session.value = null;
       members.value = [];
+      lastReportedKey.value = "";
       stopMembersPolling();
       startLobbyPolling();
       await refreshAdmin();
@@ -253,11 +290,6 @@ export function useNetworkStatus() {
     }
   }
 
-  function selectRoom(room: RoomSummary) {
-    selectedRoomId.value = room.id;
-    // Code is never listed; user must still type it.
-  }
-
   async function leaveOrDissolve() {
     if (busyAction.value) return;
     const current = session.value;
@@ -296,6 +328,7 @@ export function useNetworkStatus() {
     members.value = [];
     status.value = null;
     latencies.value = {};
+    lastReportedKey.value = "";
     phase.value = "idle";
     error.value = null;
     busyAction.value = false;
@@ -307,8 +340,55 @@ export function useNetworkStatus() {
     await leaveOrDissolve();
   }
 
-  function peerLatency(peer: PeerView): number | null {
-    return latencies.value[peer.id] ?? peer.latencyMs ?? null;
+  function memberNet(member: RoomMember): MemberNetInfo {
+    const current = session.value;
+    const selfIps = status.value?.selfIps ?? [];
+    const vip = member.virtualIp?.trim() || "";
+    const isSelf =
+      !!current &&
+      ((!!current.memberId && member.id === current.memberId) ||
+        (!!vip && selfIps.includes(vip)));
+    const virtualIp = vip || null;
+
+    if (isSelf) {
+      return {
+        kind: "self",
+        latencyMs: null,
+        virtualIp: virtualIp ?? status.value?.selfIps?.[0] ?? null,
+        isSelf: true,
+      };
+    }
+
+    if (!virtualIp && !member.nodeId) {
+      return {
+        kind: "pending",
+        latencyMs: null,
+        virtualIp: null,
+        isSelf: false,
+      };
+    }
+
+    const peers = status.value?.peers ?? [];
+    const peer =
+      peers.find((p) => member.nodeId && p.id === member.nodeId) ??
+      peers.find((p) => virtualIp && p.ips.includes(virtualIp));
+
+    if (!peer) {
+      return {
+        kind: virtualIp ? "idle" : "pending",
+        latencyMs: latencies.value[member.id] ?? null,
+        virtualIp,
+        isSelf: false,
+      };
+    }
+
+    return {
+      kind: peer.conn,
+      relay: peer.relay,
+      latencyMs: latencies.value[member.id] ?? peer.latencyMs ?? null,
+      virtualIp: virtualIp ?? peer.ips[0] ?? null,
+      isSelf: false,
+    };
   }
 
   onMounted(async () => {
@@ -319,15 +399,6 @@ export function useNetworkStatus() {
       bootstrapUrl.value = "";
     }
     startLobbyPolling();
-    if (isAdmin.value) {
-      void pullStatus().then(() => {
-        if (status.value?.selfIps?.length && !session.value) {
-          // Tunnel already up from previous session without room metadata.
-          phase.value = "connected";
-          startPolling();
-        }
-      });
-    }
   });
 
   onUnmounted(() => {
@@ -347,14 +418,12 @@ export function useNetworkStatus() {
     displayName,
     roomName,
     joinCode,
-    selectedRoomId,
     busyAction,
     createAndConnect,
     joinAndConnect,
-    selectRoom,
     leaveOrDissolve,
     disconnect,
-    peerLatency,
+    memberNet,
     refreshAdmin,
     refreshRooms,
   };

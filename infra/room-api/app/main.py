@@ -14,7 +14,9 @@ from .db import (
     Database,
     normalize_code,
     validate_display_name,
+    validate_node_id,
     validate_room_name,
+    validate_virtual_ip,
 )
 from .headscale import mint_auth_key
 from .rate_limit import RateLimiter
@@ -68,6 +70,12 @@ class TokenBody(BaseModel):
     memberToken: str = Field(min_length=8, max_length=128)
 
 
+class PresenceBody(BaseModel):
+    memberToken: str = Field(min_length=8, max_length=128)
+    nodeId: str = Field(min_length=1, max_length=128)
+    virtualIp: str = Field(min_length=1, max_length=64)
+
+
 def _client_ip(request: Request) -> str:
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
@@ -84,6 +92,17 @@ def _room_public(room: Any) -> dict[str, Any]:
         "memberCount": room.member_count,
         "expiresAt": room.expires_at,
         "createdAt": room.created_at,
+    }
+
+
+def _member_public(m: Any) -> dict[str, Any]:
+    return {
+        "id": m.id,
+        "displayName": m.display_name,
+        "isHost": m.is_host,
+        "joinedAt": m.joined_at,
+        "nodeId": m.node_id,
+        "virtualIp": m.virtual_ip,
     }
 
 
@@ -115,13 +134,14 @@ async def create_room(body: CreateRoomBody, request: Request) -> dict[str, Any]:
     except Exception as e:
         raise HTTPException(502, f"无法签发进网凭证: {e}") from e
 
-    room, _member, code, member_token = db.create_room(name, display)
+    room, member, code, member_token = db.create_room(name, display)
     return {
         "code": code,
         "expiresAt": room.expires_at,
         "loginServer": settings.login_server.rstrip("/"),
         "authKey": auth_key,
         "memberToken": member_token,
+        "memberId": member.id,
         "isHost": True,
         "room": _room_public(room),
     }
@@ -154,7 +174,7 @@ async def join_room(body: JoinBody, request: Request) -> dict[str, Any]:
         raise HTTPException(502, f"无法签发进网凭证: {e}") from e
 
     try:
-        _member, member_token = db.add_member(room.id, display)
+        member, member_token = db.add_member(room.id, display)
     except LookupError as e:
         raise HTTPException(401, str(e)) from e
 
@@ -165,6 +185,7 @@ async def join_room(body: JoinBody, request: Request) -> dict[str, Any]:
         "loginServer": settings.login_server.rstrip("/"),
         "authKey": auth_key,
         "memberToken": member_token,
+        "memberId": member.id,
         "isHost": False,
         "room": _room_public(room),
     }
@@ -180,16 +201,30 @@ def list_members(room_id: str, request: Request) -> dict[str, Any]:
     members = db.list_members(room_id)
     return {
         "room": _room_public(room),
-        "members": [
-            {
-                "id": m.id,
-                "displayName": m.display_name,
-                "isHost": m.is_host,
-                "joinedAt": m.joined_at,
-            }
-            for m in members
-        ],
+        "members": [_member_public(m) for m in members],
     }
+
+
+@app.post("/api/rooms/{room_id}/presence")
+def report_presence(
+    room_id: str, body: PresenceBody, request: Request
+) -> dict[str, Any]:
+    if not limiter.allow(f"presence:{_client_ip(request)}"):
+        raise HTTPException(429, "请求过于频繁，请稍后再试")
+    try:
+        node_id = validate_node_id(body.nodeId)
+        virtual_ip = validate_virtual_ip(body.virtualIp)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    try:
+        member = db.update_presence(
+            room_id, body.memberToken, node_id, virtual_ip
+        )
+    except PermissionError as e:
+        raise HTTPException(403, str(e)) from e
+    except LookupError as e:
+        raise HTTPException(404, str(e)) from e
+    return {"status": "ok", "member": _member_public(member)}
 
 
 @app.post("/api/rooms/{room_id}/leave")

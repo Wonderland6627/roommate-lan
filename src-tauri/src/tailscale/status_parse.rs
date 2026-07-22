@@ -29,6 +29,9 @@ pub struct PeerView {
 #[serde(rename_all = "camelCase")]
 pub struct NetworkStatus {
     pub backend_state: String,
+    /// Absent when talking to an older RoommateNetworkService build.
+    #[serde(default)]
+    pub self_id: String,
     pub self_ips: Vec<String>,
     pub self_hostname: String,
     pub peers: Vec<PeerView>,
@@ -134,6 +137,7 @@ pub fn parse_status_json(json: &str) -> Result<NetworkStatus, String> {
 
     Ok(NetworkStatus {
         backend_state: raw.backend_state.unwrap_or_else(|| "Unknown".into()),
+        self_id: self_node.id.clone().unwrap_or_default(),
         self_ips: self_node.tailscale_ips.unwrap_or_default(),
         self_hostname: self_node
             .host_name
@@ -205,6 +209,7 @@ mod tests {
 
         let status = parse_status_json(json).unwrap();
         assert_eq!(status.backend_state, "Running");
+        assert_eq!(status.self_id, "n1");
         assert_eq!(status.self_ips, vec!["100.64.0.1"]);
         assert_eq!(status.peers.len(), 1);
         assert_eq!(status.peers[0].conn, ConnKind::DerpRelay);

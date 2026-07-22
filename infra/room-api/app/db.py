@@ -69,6 +69,49 @@ class Member:
     display_name: str
     is_host: bool
     joined_at: int
+    node_id: str | None = None
+    virtual_ip: str | None = None
+    presence_at: int | None = None
+
+
+def validate_node_id(node_id: str) -> str:
+    cleaned = node_id.strip()
+    if not cleaned or len(cleaned) > 128:
+        raise ValueError("nodeId 无效")
+    if any(c.isspace() for c in cleaned):
+        raise ValueError("nodeId 无效")
+    return cleaned
+
+
+def validate_virtual_ip(virtual_ip: str) -> str:
+    cleaned = virtual_ip.strip()
+    if not cleaned or len(cleaned) > 64:
+        raise ValueError("virtualIp 无效")
+    # Basic IPv4 / IPv6-ish check without pulling in ipaddress edge cases for Tailscale CGNAT.
+    allowed = set("0123456789abcdefABCDEF:.")
+    if any(c not in allowed for c in cleaned):
+        raise ValueError("virtualIp 无效")
+    if cleaned.count(".") == 3:
+        parts = cleaned.split(".")
+        if all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+            return cleaned
+    if ":" in cleaned:
+        return cleaned
+    raise ValueError("virtualIp 无效")
+
+
+def _member_from_row(r: sqlite3.Row) -> Member:
+    keys = r.keys()
+    return Member(
+        id=r["id"],
+        room_id=r["room_id"],
+        display_name=r["display_name"],
+        is_host=bool(r["is_host"]),
+        joined_at=r["joined_at"],
+        node_id=r["node_id"] if "node_id" in keys else None,
+        virtual_ip=r["virtual_ip"] if "virtual_ip" in keys else None,
+        presence_at=r["presence_at"] if "presence_at" in keys else None,
+    )
 
 
 class Database:
@@ -109,12 +152,28 @@ class Database:
                   member_token_hash TEXT NOT NULL UNIQUE,
                   display_name TEXT NOT NULL,
                   is_host INTEGER NOT NULL DEFAULT 0,
-                  joined_at INTEGER NOT NULL
+                  joined_at INTEGER NOT NULL,
+                  node_id TEXT,
+                  virtual_ip TEXT,
+                  presence_at INTEGER
                 );
                 CREATE INDEX IF NOT EXISTS idx_rooms_expires ON rooms(expires_at);
                 CREATE INDEX IF NOT EXISTS idx_members_room ON members(room_id);
                 """
             )
+            self._migrate_members_presence(conn)
+
+    def _migrate_members_presence(self, conn: sqlite3.Connection) -> None:
+        cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(members)").fetchall()
+        }
+        if "node_id" not in cols:
+            conn.execute("ALTER TABLE members ADD COLUMN node_id TEXT")
+        if "virtual_ip" not in cols:
+            conn.execute("ALTER TABLE members ADD COLUMN virtual_ip TEXT")
+        if "presence_at" not in cols:
+            conn.execute("ALTER TABLE members ADD COLUMN presence_at INTEGER")
 
     def purge_expired(self) -> int:
         now = _now()
@@ -178,6 +237,9 @@ class Database:
             display_name=display_name,
             is_host=True,
             joined_at=now,
+            node_id=None,
+            virtual_ip=None,
+            presence_at=None,
         )
         return room, member, code, member_token
 
@@ -284,6 +346,9 @@ class Database:
             display_name=display_name,
             is_host=False,
             joined_at=now,
+            node_id=None,
+            virtual_ip=None,
+            presence_at=None,
         )
         return member, member_token
 
@@ -297,16 +362,7 @@ class Database:
                 """,
                 (room_id,),
             ).fetchall()
-        return [
-            Member(
-                id=r["id"],
-                room_id=r["room_id"],
-                display_name=r["display_name"],
-                is_host=bool(r["is_host"]),
-                joined_at=r["joined_at"],
-            )
-            for r in rows
-        ]
+        return [_member_from_row(r) for r in rows]
 
     def member_by_token(self, room_id: str, member_token: str) -> Member | None:
         token_hash = hashlib.sha256(member_token.encode()).hexdigest()
@@ -320,13 +376,35 @@ class Database:
             ).fetchone()
         if not r:
             return None
-        return Member(
-            id=r["id"],
-            room_id=r["room_id"],
-            display_name=r["display_name"],
-            is_host=bool(r["is_host"]),
-            joined_at=r["joined_at"],
-        )
+        return _member_from_row(r)
+
+    def update_presence(
+        self,
+        room_id: str,
+        member_token: str,
+        node_id: str,
+        virtual_ip: str,
+    ) -> Member:
+        member = self.member_by_token(room_id, member_token)
+        if not member:
+            raise PermissionError("无效的成员凭证")
+        room = self.get_room(room_id)
+        if not room:
+            raise LookupError("房间不存在或已过期")
+        now = _now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE members
+                SET node_id = ?, virtual_ip = ?, presence_at = ?
+                WHERE id = ?
+                """,
+                (node_id, virtual_ip, now, member.id),
+            )
+        member.node_id = node_id
+        member.virtual_ip = virtual_ip
+        member.presence_at = now
+        return member
 
     def leave(self, room_id: str, member_token: str) -> None:
         member = self.member_by_token(room_id, member_token)

@@ -6,7 +6,6 @@ defineProps<{
   roomName: string;
   displayName: string;
   joinCode: string;
-  selectedRoomId: string | null;
   busy: boolean;
 }>();
 
@@ -14,7 +13,6 @@ const emit = defineEmits<{
   "update:roomName": [string];
   "update:displayName": [string];
   "update:joinCode": [string];
-  select: [RoomSummary];
   create: [];
   join: [];
   refresh: [];
@@ -59,12 +57,7 @@ const emit = defineEmits<{
         </button>
       </div>
       <ul v-if="rooms.length" class="rooms">
-        <li
-          v-for="room in rooms"
-          :key="room.id"
-          :class="{ selected: selectedRoomId === room.id }"
-          @click="emit('select', room)"
-        >
+        <li v-for="room in rooms" :key="room.id">
           <span class="rname">{{ room.name }}</span>
           <span class="meta">{{ room.memberCount }} 人</span>
         </li>
@@ -157,11 +150,7 @@ const emit = defineEmits<{
   gap: 0.5rem;
   padding: 0.55rem 0.65rem;
   border-radius: 8px;
-  cursor: pointer;
   background: rgba(0, 0, 0, 0.18);
-}
-.rooms li.selected {
-  box-shadow: inset 0 0 0 1px var(--accent);
 }
 .rname {
   font-size: 0.9rem;
