@@ -17,6 +17,14 @@ const emit = defineEmits<{
   join: [];
   refresh: [];
 }>();
+
+/** 与服务端 normalize_code 一致：仅 A–Z，最多 4 位，自动大写 */
+function onJoinCodeInput(e: Event) {
+  const el = e.target as HTMLInputElement;
+  const normalized = el.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 4);
+  el.value = normalized;
+  emit("update:joinCode", normalized);
+}
 </script>
 
 <template>
@@ -26,7 +34,7 @@ const emit = defineEmits<{
       <input
         :value="displayName"
         maxlength="16"
-        placeholder="在房间里怎么称呼你"
+        placeholder="在房间里怎么称呼你..."
         :disabled="busy"
         @input="emit('update:displayName', ($event.target as HTMLInputElement).value)"
       />
@@ -39,7 +47,7 @@ const emit = defineEmits<{
         <input
           :value="roomName"
           maxlength="32"
-          placeholder="今晚联机"
+          placeholder="输入房间名..."
           :disabled="busy"
           @input="emit('update:roomName', ($event.target as HTMLInputElement).value)"
         />
@@ -68,11 +76,17 @@ const emit = defineEmits<{
         <span>房间码（4 位字母）</span>
         <input
           :value="joinCode"
-          maxlength="8"
+          maxlength="4"
+          minlength="4"
+          pattern="[A-Za-z]{4}"
           placeholder="ABCD"
           class="code"
+          autocomplete="off"
+          spellcheck="false"
+          autocapitalize="characters"
+          inputmode="text"
           :disabled="busy"
-          @input="emit('update:joinCode', ($event.target as HTMLInputElement).value.toUpperCase())"
+          @input="onJoinCodeInput"
         />
       </label>
       <button type="button" class="cta secondary" :disabled="busy" @click="emit('join')">

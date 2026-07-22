@@ -48,7 +48,12 @@ export function useNetworkStatus() {
   const session = ref<RoomCredentials | null>(null);
   const displayName = ref(localStorage.getItem(LS_DISPLAY) ?? "");
   const roomName = ref("");
-  const joinCode = ref(localStorage.getItem(LS_CODE) ?? "");
+  const joinCode = ref(
+    (localStorage.getItem(LS_CODE) ?? "")
+      .toUpperCase()
+      .replace(/[^A-Z]/g, "")
+      .slice(0, 4),
+  );
   const busyAction = ref(false);
   const lastReportedKey = ref("");
   const lastPresenceAt = ref(0);
@@ -273,10 +278,18 @@ export function useNetworkStatus() {
   async function joinAndConnect() {
     if (busyAction.value) return;
     error.value = null;
-    const code = joinCode.value.trim();
+    const code = joinCode.value
+      .toUpperCase()
+      .replace(/[^A-Z]/g, "")
+      .slice(0, 4);
+    joinCode.value = code;
     const display = displayName.value.trim();
     if (!code) {
       error.value = "请填写房间码";
+      return;
+    }
+    if (code.length !== 4) {
+      error.value = "房间码须为 4 位字母";
       return;
     }
     if (!display) {

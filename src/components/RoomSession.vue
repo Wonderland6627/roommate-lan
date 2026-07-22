@@ -87,7 +87,7 @@ function peerKind(net: MemberNetInfo): ConnKind {
             <div class="name-row">
               <span class="dname">{{ m.displayName }}</span>
               <span v-if="netOf(m).isSelf" class="tag me">我</span>
-              <span v-if="m.isHost" class="tag">房主</span>
+              <span v-if="m.isHost" class="tag">网管</span>
             </div>
             <button
               v-if="netOf(m).virtualIp"
