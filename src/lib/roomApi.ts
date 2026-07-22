@@ -136,3 +136,27 @@ export async function dissolveRoom(
     body: JSON.stringify({ memberToken }),
   });
 }
+
+/** Best-effort room cleanup that can outlive the window (close / crash path). */
+export function leaveOrDissolveKeepalive(
+  baseUrl: string,
+  roomId: string,
+  memberToken: string,
+  isHost: boolean,
+): void {
+  const action = isHost ? "dissolve" : "leave";
+  const url = `${baseUrl.replace(/\/$/, "")}/api/rooms/${encodeURIComponent(roomId)}/${action}`;
+  try {
+    void fetch(url, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ memberToken }),
+      keepalive: true,
+    });
+  } catch {
+    // ignore — process is exiting
+  }
+}

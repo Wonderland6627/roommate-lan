@@ -181,6 +181,35 @@ class Database:
             cur = conn.execute("DELETE FROM rooms WHERE expires_at <= ?", (now,))
             return cur.rowcount
 
+    def purge_stale_hosts(self, stale_after_secs: int | None = None) -> int:
+        """Remove rooms whose host has not reported presence recently.
+
+        Covers: app killed without dissolve, dissolve API failed, never connected tunnel.
+        """
+        stale = (
+            stale_after_secs
+            if stale_after_secs is not None
+            else settings.host_stale_secs
+        )
+        if stale <= 0:
+            return 0
+        cutoff = _now() - stale
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT r.id
+                FROM rooms r
+                JOIN members m ON m.id = r.host_member_id
+                WHERE COALESCE(m.presence_at, m.joined_at) < ?
+                """,
+                (cutoff,),
+            ).fetchall()
+            deleted = 0
+            for row in rows:
+                conn.execute("DELETE FROM rooms WHERE id = ?", (row["id"],))
+                deleted += 1
+            return deleted
+
     def create_room(self, name: str, display_name: str) -> tuple[Room, Member, str, str]:
         """Returns (room, host_member, plaintext_code, member_token)."""
         self.purge_expired()

@@ -89,7 +89,13 @@ const backendLabel = computed(() => {
       <p class="transit-title">
         {{ phase === "disconnecting" ? "正在退出…" : "正在连接…" }}
       </p>
-      <p class="transit-hint">隧道建立中，请稍候</p>
+      <p class="transit-hint">
+        {{
+          phase === "disconnecting"
+            ? "正在清理房间并断开隧道，请稍候"
+            : "隧道建立中，请稍候"
+        }}
+      </p>
     </div>
 
     <RoomSession

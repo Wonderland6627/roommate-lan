@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     mock_auth_key: str = ""
     rate_limit_per_minute: int = 30
     join_fail_limit_per_minute: int = 20
+    # Drop rooms whose host stopped reporting presence (app crash / close without dissolve).
+    host_stale_secs: int = 900
 
 
 settings = Settings()

@@ -3,6 +3,7 @@ import {
   createRoom,
   dissolveRoom,
   joinRoom,
+  leaveOrDissolveKeepalive,
   leaveRoom,
   listMembers,
   listRooms,
@@ -29,6 +30,7 @@ const STATUS_MS = 2000;
 const PING_MS = 5000;
 const LOBBY_MS = 5000;
 const MEMBERS_MS = 3000;
+const PRESENCE_REFRESH_MS = 60_000;
 
 const LS_DISPLAY = "roommate.displayName";
 const LS_CODE = "roommate.lastCode";
@@ -49,6 +51,7 @@ export function useNetworkStatus() {
   const joinCode = ref(localStorage.getItem(LS_CODE) ?? "");
   const busyAction = ref(false);
   const lastReportedKey = ref("");
+  const lastPresenceAt = ref(0);
 
   let statusTimer: ReturnType<typeof setInterval> | null = null;
   let pingTimer: ReturnType<typeof setInterval> | null = null;
@@ -99,7 +102,11 @@ export function useNetworkStatus() {
     if (!nodeId || !virtualIp) return;
 
     const key = `${current.room.id}:${nodeId}:${virtualIp}`;
-    if (key === lastReportedKey.value) return;
+    const now = Date.now();
+    const freshEnough =
+      key === lastReportedKey.value &&
+      now - lastPresenceAt.value < PRESENCE_REFRESH_MS;
+    if (freshEnough) return;
 
     try {
       await reportPresence(bootstrapUrl.value, current.room.id, {
@@ -108,6 +115,7 @@ export function useNetworkStatus() {
         virtualIp,
       });
       lastReportedKey.value = key;
+      lastPresenceAt.value = now;
     } catch {
       // presence is best-effort; members poll will stay without IP until retry
     }
@@ -200,6 +208,7 @@ export function useNetworkStatus() {
     phase.value = "connecting";
     error.value = null;
     lastReportedKey.value = "";
+    lastPresenceAt.value = 0;
     stopLobbyPolling();
     try {
       await apiConnect({
@@ -224,6 +233,7 @@ export function useNetworkStatus() {
       session.value = null;
       members.value = [];
       lastReportedKey.value = "";
+      lastPresenceAt.value = 0;
       stopMembersPolling();
       startLobbyPolling();
       await refreshAdmin();
@@ -290,15 +300,28 @@ export function useNetworkStatus() {
     }
   }
 
-  async function leaveOrDissolve() {
-    if (busyAction.value) return;
+  async function leaveOrDissolve(opts?: { force?: boolean }) {
+    if (busyAction.value && !opts?.force) return;
     const current = session.value;
+    if (!current) {
+      if (opts?.force) {
+        try {
+          await apiDisconnect();
+        } catch {
+          // ignore
+        }
+      }
+      return;
+    }
+
     busyAction.value = true;
     phase.value = "disconnecting";
     stopPolling();
     stopMembersPolling();
+
+    let roomErr: string | null = null;
     try {
-      if (current && bootstrapUrl.value) {
+      if (bootstrapUrl.value) {
         if (current.isHost) {
           await dissolveRoom(
             bootstrapUrl.value,
@@ -313,26 +336,57 @@ export function useNetworkStatus() {
           );
         }
       }
-    } catch {
-      // still disconnect tunnel
+    } catch (e) {
+      roomErr = e instanceof Error ? e.message : String(e);
+      if (!opts?.force) {
+        error.value = `退出房间失败（房间可能仍留在列表）: ${roomErr}`;
+        phase.value = "connected";
+        busyAction.value = false;
+        startPolling();
+        startMembersPolling();
+        return;
+      }
     }
+
     try {
       await apiDisconnect();
     } catch (e) {
-      phase.value = "error";
-      error.value = e instanceof Error ? e.message : String(e);
-      busyAction.value = false;
-      return;
+      if (!opts?.force) {
+        phase.value = "error";
+        error.value = e instanceof Error ? e.message : String(e);
+        busyAction.value = false;
+        return;
+      }
     }
+
     session.value = null;
     members.value = [];
     status.value = null;
     latencies.value = {};
     lastReportedKey.value = "";
+    lastPresenceAt.value = 0;
     phase.value = "idle";
-    error.value = null;
+    error.value = roomErr
+      ? `已断开，但房间清理失败（可能仍在列表）: ${roomErr}`
+      : null;
     busyAction.value = false;
     startLobbyPolling();
+  }
+
+  /** Non-blocking cleanup for window close — never blocks the OS close button. */
+  function cleanupOnWindowClose() {
+    const current = session.value;
+    const base = bootstrapUrl.value;
+    if (current && base) {
+      leaveOrDissolveKeepalive(
+        base,
+        current.room.id,
+        current.memberToken,
+        current.isHost,
+      );
+    }
+    session.value = null;
+    // Tunnel teardown is handled by Rust RunEvent::Exit → service disconnect.
   }
 
   /** Legacy disconnect without room API (kept for safety). */
@@ -399,12 +453,18 @@ export function useNetworkStatus() {
       bootstrapUrl.value = "";
     }
     startLobbyPolling();
+
+    // Do NOT use Tauri onCloseRequested + preventDefault — it can stick the
+    // window closed permanently (especially across Vite HMR remounts).
+    // Keepalive dissolve/leave is best-effort; Rust Exit disconnects the tunnel.
+    window.addEventListener("pagehide", cleanupOnWindowClose);
   });
 
   onUnmounted(() => {
     stopPolling();
     stopLobbyPolling();
     stopMembersPolling();
+    window.removeEventListener("pagehide", cleanupOnWindowClose);
   });
 
   return {

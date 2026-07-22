@@ -31,6 +31,7 @@ async def _ttl_loop() -> None:
     while True:
         try:
             db.purge_expired()
+            db.purge_stale_hosts()
         except Exception:
             pass
         await asyncio.sleep(60)
