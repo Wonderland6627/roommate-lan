@@ -32,7 +32,8 @@ export function useUpdater() {
   const notes = ref("");
   const downloaded = ref(0);
   const contentLength = ref(0);
-  const pending = ref<Update | null>(null);
+  // Update uses JS private fields (#rid); Vue's ref() Proxy breaks access to them.
+  let pending: Update | null = null;
 
   const progressLabel = computed(() => {
     if (phase.value !== "downloading") return "";
@@ -79,7 +80,7 @@ export function useUpdater() {
 
     error.value = "";
     phase.value = "checking";
-    pending.value = null;
+    pending = null;
     availableVersion.value = "";
     notes.value = "";
 
@@ -90,7 +91,7 @@ export function useUpdater() {
         return;
       }
 
-      pending.value = update;
+      pending = update;
       availableVersion.value = update.version;
       notes.value = update.body ?? "";
       phase.value = "available";
@@ -108,10 +109,10 @@ export function useUpdater() {
   }
 
   async function downloadAndInstall() {
-    const update = pending.value;
-    if (!update) return;
+    if (!pending) return;
     if (phase.value === "downloading" || phase.value === "restarting") return;
 
+    const update = pending;
     error.value = "";
     downloaded.value = 0;
     contentLength.value = 0;
