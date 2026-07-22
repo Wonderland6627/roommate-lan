@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from .app_logging import log_event, setup_logging
 from .db import (
     CODE_LEN,
     Database,
@@ -27,18 +29,32 @@ limiter = RateLimiter(settings.rate_limit_per_minute)
 join_fail_limiter = RateLimiter(settings.join_fail_limit_per_minute)
 
 
+def _run_purges() -> None:
+    db.purge_expired()
+    db.purge_stale_hosts()
+
+
 async def _ttl_loop() -> None:
     while True:
         try:
-            db.purge_expired()
-            db.purge_stale_hosts()
-        except Exception:
-            pass
+            _run_purges()
+        except Exception as e:
+            log_event("purge.failed", level=logging.ERROR, error=e)
         await asyncio.sleep(60)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    setup_logging(settings.log_dir, settings.log_retain_days)
+    log_event(
+        "service.started",
+        login_server=settings.login_server.rstrip("/"),
+        headscale_api_url=settings.headscale_api_url.rstrip("/"),
+        room_ttl_h=settings.room_ttl_hours,
+        authkey_ttl_h=settings.authkey_ttl_hours,
+        host_stale_secs=settings.host_stale_secs,
+        log_dir=settings.log_dir,
+    )
     task = asyncio.create_task(_ttl_loop())
     yield
     task.cancel()
@@ -46,6 +62,7 @@ async def lifespan(_app: FastAPI):
         await task
     except asyncio.CancelledError:
         pass
+    log_event("service.stopped")
 
 
 app = FastAPI(title="Roommate Room API", version="1.0.0", lifespan=lifespan)
@@ -114,7 +131,9 @@ def health() -> dict[str, str]:
 
 @app.get("/api/rooms")
 def list_rooms(request: Request) -> dict[str, Any]:
-    if not limiter.allow(f"list:{_client_ip(request)}"):
+    ip = _client_ip(request)
+    if not limiter.allow(f"list:{ip}"):
+        log_event("rate_limited", level=logging.WARNING, action="list", ip=ip)
         raise HTTPException(429, "请求过于频繁，请稍后再试")
     rooms = db.list_rooms()
     return {"rooms": [_room_public(r) for r in rooms]}
@@ -122,7 +141,9 @@ def list_rooms(request: Request) -> dict[str, Any]:
 
 @app.post("/api/rooms")
 async def create_room(body: CreateRoomBody, request: Request) -> dict[str, Any]:
-    if not limiter.allow(f"create:{_client_ip(request)}"):
+    ip = _client_ip(request)
+    if not limiter.allow(f"create:{ip}"):
+        log_event("rate_limited", level=logging.WARNING, action="create", ip=ip)
         raise HTTPException(429, "请求过于频繁，请稍后再试")
     try:
         name = validate_room_name(body.name)
@@ -133,9 +154,24 @@ async def create_room(body: CreateRoomBody, request: Request) -> dict[str, Any]:
     try:
         auth_key = await mint_auth_key()
     except Exception as e:
+        log_event(
+            "authkey.mint_failed",
+            level=logging.WARNING,
+            action="create",
+            ip=ip,
+            error=e,
+        )
         raise HTTPException(502, f"无法签发进网凭证: {e}") from e
 
     room, member, code, member_token = db.create_room(name, display)
+    log_event(
+        "room.created",
+        room_id=room.id,
+        name=room.name,
+        host=member.display_name,
+        member_id=member.id,
+        ip=ip,
+    )
     return {
         "code": code,
         "expiresAt": room.expires_at,
@@ -152,6 +188,7 @@ async def create_room(body: CreateRoomBody, request: Request) -> dict[str, Any]:
 async def join_room(body: JoinBody, request: Request) -> dict[str, Any]:
     ip = _client_ip(request)
     if not limiter.allow(f"join:{ip}"):
+        log_event("rate_limited", level=logging.WARNING, action="join", ip=ip)
         raise HTTPException(429, "请求过于频繁，请稍后再试")
 
     code = normalize_code(body.code)
@@ -166,20 +203,56 @@ async def join_room(body: JoinBody, request: Request) -> dict[str, Any]:
     room = db.find_room_by_code(code)
     if not room:
         if not join_fail_limiter.allow(f"joinfail:{ip}"):
+            log_event(
+                "rate_limited",
+                level=logging.WARNING,
+                action="join_fail",
+                ip=ip,
+            )
             raise HTTPException(429, "错误次数过多，请稍后再试")
+        log_event(
+            "join.rejected",
+            level=logging.WARNING,
+            reason="bad_or_expired_code",
+            ip=ip,
+        )
         raise HTTPException(401, "房间码错误或房间已过期")
 
     try:
         auth_key = await mint_auth_key()
     except Exception as e:
+        log_event(
+            "authkey.mint_failed",
+            level=logging.WARNING,
+            action="join",
+            room_id=room.id,
+            ip=ip,
+            error=e,
+        )
         raise HTTPException(502, f"无法签发进网凭证: {e}") from e
 
     try:
         member, member_token = db.add_member(room.id, display)
     except LookupError as e:
+        log_event(
+            "join.rejected",
+            level=logging.WARNING,
+            reason="room_gone",
+            room_id=room.id,
+            ip=ip,
+            error=e,
+        )
         raise HTTPException(401, str(e)) from e
 
     room = db.get_room(room.id) or room
+    log_event(
+        "member.joined",
+        room_id=room.id,
+        name=room.name,
+        member=member.display_name,
+        member_id=member.id,
+        ip=ip,
+    )
     return {
         "code": code,
         "expiresAt": room.expires_at,
@@ -194,7 +267,9 @@ async def join_room(body: JoinBody, request: Request) -> dict[str, Any]:
 
 @app.get("/api/rooms/{room_id}/members")
 def list_members(room_id: str, request: Request) -> dict[str, Any]:
-    if not limiter.allow(f"members:{_client_ip(request)}"):
+    ip = _client_ip(request)
+    if not limiter.allow(f"members:{ip}"):
+        log_event("rate_limited", level=logging.WARNING, action="members", ip=ip)
         raise HTTPException(429, "请求过于频繁，请稍后再试")
     room = db.get_room(room_id)
     if not room:
@@ -210,7 +285,9 @@ def list_members(room_id: str, request: Request) -> dict[str, Any]:
 def report_presence(
     room_id: str, body: PresenceBody, request: Request
 ) -> dict[str, Any]:
-    if not limiter.allow(f"presence:{_client_ip(request)}"):
+    ip = _client_ip(request)
+    if not limiter.allow(f"presence:{ip}"):
+        log_event("rate_limited", level=logging.WARNING, action="presence", ip=ip)
         raise HTTPException(429, "请求过于频繁，请稍后再试")
     try:
         node_id = validate_node_id(body.nodeId)
@@ -218,33 +295,99 @@ def report_presence(
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     try:
-        member = db.update_presence(
+        result = db.update_presence(
             room_id, body.memberToken, node_id, virtual_ip
         )
     except PermissionError as e:
+        log_event(
+            "presence.rejected",
+            level=logging.WARNING,
+            room_id=room_id,
+            ip=ip,
+            error=e,
+        )
         raise HTTPException(403, str(e)) from e
     except LookupError as e:
+        log_event(
+            "presence.rejected",
+            level=logging.WARNING,
+            room_id=room_id,
+            ip=ip,
+            error=e,
+        )
         raise HTTPException(404, str(e)) from e
-    return {"status": "ok", "member": _member_public(member)}
+    if result.first_presence:
+        log_event(
+            "member.presence",
+            room_id=room_id,
+            member=result.member.display_name,
+            member_id=result.member.id,
+            node_id=result.member.node_id,
+            virtual_ip=result.member.virtual_ip,
+            ip=ip,
+        )
+    return {"status": "ok", "member": _member_public(result.member)}
 
 
 @app.post("/api/rooms/{room_id}/leave")
 def leave_room(room_id: str, body: TokenBody, request: Request) -> dict[str, str]:
-    if not limiter.allow(f"leave:{_client_ip(request)}"):
+    ip = _client_ip(request)
+    if not limiter.allow(f"leave:{ip}"):
+        log_event("rate_limited", level=logging.WARNING, action="leave", ip=ip)
         raise HTTPException(429, "请求过于频繁，请稍后再试")
     try:
-        db.leave(room_id, body.memberToken)
+        result = db.leave(room_id, body.memberToken)
     except PermissionError as e:
+        log_event(
+            "leave.rejected",
+            level=logging.WARNING,
+            room_id=room_id,
+            ip=ip,
+            error=e,
+        )
         raise HTTPException(403, str(e)) from e
+    log_event(
+        "member.left",
+        room_id=result.room_id,
+        name=result.room_name,
+        member=result.display_name,
+        member_id=result.member_id,
+        room_deleted=result.room_deleted,
+        ip=ip,
+    )
+    if result.room_deleted:
+        log_event(
+            "room.deleted",
+            room_id=result.room_id,
+            name=result.room_name,
+            reason="empty_after_leave",
+        )
     return {"status": "left"}
 
 
 @app.post("/api/rooms/{room_id}/dissolve")
 def dissolve_room(room_id: str, body: TokenBody, request: Request) -> dict[str, str]:
-    if not limiter.allow(f"dissolve:{_client_ip(request)}"):
+    ip = _client_ip(request)
+    if not limiter.allow(f"dissolve:{ip}"):
+        log_event("rate_limited", level=logging.WARNING, action="dissolve", ip=ip)
         raise HTTPException(429, "请求过于频繁，请稍后再试")
     try:
-        db.dissolve(room_id, body.memberToken)
+        result = db.dissolve(room_id, body.memberToken)
     except PermissionError as e:
+        log_event(
+            "dissolve.rejected",
+            level=logging.WARNING,
+            room_id=room_id,
+            ip=ip,
+            error=e,
+        )
         raise HTTPException(403, str(e)) from e
+    log_event(
+        "room.dissolved",
+        room_id=result.room_id,
+        name=result.room_name,
+        by=result.display_name,
+        member_id=result.member_id,
+        ip=ip,
+    )
     return {"status": "dissolved"}

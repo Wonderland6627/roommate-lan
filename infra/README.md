@@ -42,6 +42,17 @@ docker compose up -d --build room-api caddy
 
 房间 TTL 默认 4h（`ROOM_TTL_HOURS`）；主动离开后若无人则销毁。
 
+### Room API 业务日志
+
+Room API 将房间生命周期等事件写入宿主机目录 `infra/logs/`（容器内 `/data/logs`）：
+
+- 当前文件：`room-api.log`
+- 按天滚动，默认保留 14 天（`LOG_RETAIN_DAYS`）
+- 宝塔：文件管理进入部署目录下的 `infra/logs/`，打开 `room-api.log` 即可
+- 不记录 AuthKey、memberToken、完整房间短码
+
+也可：`docker compose logs -f room-api`（同一内容也会打到 stdout）。
+
 ### 宝塔环境（本机 80/443 已被占用）
 
 主机已装宝塔 Nginx 时，不要启动 Compose 里的 Caddy。用覆盖文件把服务只绑本机，由宝塔反代 HTTPS：

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
+from .app_logging import log_event
 from .settings import settings
 
 CODE_ALPHABET = string.ascii_uppercase  # A-Z only
@@ -72,6 +73,35 @@ class Member:
     node_id: str | None = None
     virtual_ip: str | None = None
     presence_at: int | None = None
+
+
+@dataclass
+class PurgedRoom:
+    id: str
+    name: str
+
+
+@dataclass
+class LeaveResult:
+    room_id: str
+    room_name: str
+    member_id: str
+    display_name: str
+    room_deleted: bool
+
+
+@dataclass
+class DissolveResult:
+    room_id: str
+    room_name: str
+    member_id: str
+    display_name: str
+
+
+@dataclass
+class PresenceResult:
+    member: Member
+    first_presence: bool
 
 
 def validate_node_id(node_id: str) -> str:
@@ -175,13 +205,23 @@ class Database:
         if "presence_at" not in cols:
             conn.execute("ALTER TABLE members ADD COLUMN presence_at INTEGER")
 
-    def purge_expired(self) -> int:
+    def purge_expired(self) -> list[PurgedRoom]:
         now = _now()
         with self.connect() as conn:
-            cur = conn.execute("DELETE FROM rooms WHERE expires_at <= ?", (now,))
-            return cur.rowcount
+            rows = conn.execute(
+                "SELECT id, name FROM rooms WHERE expires_at <= ?",
+                (now,),
+            ).fetchall()
+            purged = [PurgedRoom(id=r["id"], name=r["name"]) for r in rows]
+            for room in purged:
+                conn.execute("DELETE FROM rooms WHERE id = ?", (room.id,))
+        for room in purged:
+            log_event("room.expired", room_id=room.id, name=room.name)
+        return purged
 
-    def purge_stale_hosts(self, stale_after_secs: int | None = None) -> int:
+    def purge_stale_hosts(
+        self, stale_after_secs: int | None = None
+    ) -> list[PurgedRoom]:
         """Remove rooms whose host has not reported presence recently.
 
         Covers: app killed without dissolve, dissolve API failed, never connected tunnel.
@@ -192,23 +232,24 @@ class Database:
             else settings.host_stale_secs
         )
         if stale <= 0:
-            return 0
+            return []
         cutoff = _now() - stale
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT r.id
+                SELECT r.id, r.name
                 FROM rooms r
                 JOIN members m ON m.id = r.host_member_id
                 WHERE COALESCE(m.presence_at, m.joined_at) < ?
                 """,
                 (cutoff,),
             ).fetchall()
-            deleted = 0
-            for row in rows:
-                conn.execute("DELETE FROM rooms WHERE id = ?", (row["id"],))
-                deleted += 1
-            return deleted
+            purged = [PurgedRoom(id=r["id"], name=r["name"]) for r in rows]
+            for room in purged:
+                conn.execute("DELETE FROM rooms WHERE id = ?", (room.id,))
+        for room in purged:
+            log_event("room.stale_host", room_id=room.id, name=room.name)
+        return purged
 
     def create_room(self, name: str, display_name: str) -> tuple[Room, Member, str, str]:
         """Returns (room, host_member, plaintext_code, member_token)."""
@@ -413,13 +454,14 @@ class Database:
         member_token: str,
         node_id: str,
         virtual_ip: str,
-    ) -> Member:
+    ) -> PresenceResult:
         member = self.member_by_token(room_id, member_token)
         if not member:
             raise PermissionError("无效的成员凭证")
         room = self.get_room(room_id)
         if not room:
             raise LookupError("房间不存在或已过期")
+        first_presence = member.presence_at is None
         now = _now()
         with self.connect() as conn:
             conn.execute(
@@ -433,26 +475,44 @@ class Database:
         member.node_id = node_id
         member.virtual_ip = virtual_ip
         member.presence_at = now
-        return member
+        return PresenceResult(member=member, first_presence=first_presence)
 
-    def leave(self, room_id: str, member_token: str) -> None:
+    def leave(self, room_id: str, member_token: str) -> LeaveResult:
         member = self.member_by_token(room_id, member_token)
         if not member:
             raise PermissionError("无效的成员凭证")
+        room = self.get_room(room_id)
+        room_name = room.name if room else room_id
         with self.connect() as conn:
             conn.execute("DELETE FROM members WHERE id = ?", (member.id,))
             remaining = conn.execute(
                 "SELECT COUNT(*) AS c FROM members WHERE room_id = ?",
                 (room_id,),
             ).fetchone()["c"]
-            if remaining == 0:
+            room_deleted = remaining == 0
+            if room_deleted:
                 conn.execute("DELETE FROM rooms WHERE id = ?", (room_id,))
+        return LeaveResult(
+            room_id=room_id,
+            room_name=room_name,
+            member_id=member.id,
+            display_name=member.display_name,
+            room_deleted=room_deleted,
+        )
 
-    def dissolve(self, room_id: str, member_token: str) -> None:
+    def dissolve(self, room_id: str, member_token: str) -> DissolveResult:
         member = self.member_by_token(room_id, member_token)
         if not member:
             raise PermissionError("无效的成员凭证")
         if not member.is_host:
             raise PermissionError("仅房主可解散房间")
+        room = self.get_room(room_id)
+        room_name = room.name if room else room_id
         with self.connect() as conn:
             conn.execute("DELETE FROM rooms WHERE id = ?", (room_id,))
+        return DissolveResult(
+            room_id=room_id,
+            room_name=room_name,
+            member_id=member.id,
+            display_name=member.display_name,
+        )

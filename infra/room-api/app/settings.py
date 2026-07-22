@@ -5,6 +5,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     data_dir: str = "/data"
+    log_dir: str = "/data/logs"
+    log_retain_days: int = 14
     login_server: str = "https://hs.example.com"
     room_ttl_hours: int = 4
     authkey_ttl_hours: int = 2

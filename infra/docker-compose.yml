@@ -34,9 +34,12 @@ services:
       ROOM_TTL_HOURS: ${ROOM_TTL_HOURS:-4}
       AUTHKEY_TTL_HOURS: ${AUTHKEY_TTL_HOURS:-2}
       DATA_DIR: /data
+      LOG_DIR: ${LOG_DIR:-/data/logs}
+      LOG_RETAIN_DAYS: ${LOG_RETAIN_DAYS:-14}
       MOCK_AUTH_KEY: ${MOCK_AUTH_KEY:-}
     volumes:
       - room-api-data:/data
+      - ./logs:/data/logs
     depends_on:
       - headscale
     expose:
