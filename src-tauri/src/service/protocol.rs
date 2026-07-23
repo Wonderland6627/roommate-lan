@@ -15,6 +15,7 @@ pub enum Op {
     Ping,
     Version,
     Heartbeat,
+    ResetEngine,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

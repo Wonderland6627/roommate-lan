@@ -20,6 +20,7 @@ const {
   createAndConnect,
   joinAndConnect,
   leaveOrDissolve,
+  resetEngineAndRetry,
   memberNet,
   refreshRooms,
 } = useNetworkStatus();
@@ -107,7 +108,18 @@ const backendLabel = computed(() => {
       @leave="leaveOrDissolve"
     />
 
-    <p v-if="error" class="error animate-fade-up" role="alert">{{ error }}</p>
+    <div v-if="error" class="error-row animate-fade-up">
+      <p class="error" role="alert">{{ error }}</p>
+      <button
+        v-if="phase === 'error' || phase === 'idle'"
+        type="button"
+        class="reset-engine"
+        :disabled="busy"
+        @click="resetEngineAndRetry"
+      >
+        {{ busyAction ? "重置中…" : "重置网络引擎" }}
+      </button>
+    </div>
 
     <UpdateStatus class="animate-fade-up" style="animation-delay: 0.15s" />
   </div>
@@ -177,6 +189,11 @@ const backendLabel = computed(() => {
   font-size: 0.8rem;
   color: var(--ink-muted);
 }
+.error-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
 .error {
   margin: 0;
   padding: 0.7rem 0.85rem;
@@ -185,5 +202,22 @@ const backendLabel = computed(() => {
   line-height: 1.4;
   color: #1a0e0c;
   background: color-mix(in srgb, var(--danger) 85%, white);
+}
+.reset-engine {
+  align-self: flex-start;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 0.45rem 0.75rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.reset-engine:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.reset-engine:not(:disabled):hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
 }
 </style>

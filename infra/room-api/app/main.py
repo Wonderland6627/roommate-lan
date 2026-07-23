@@ -20,7 +20,7 @@ from .db import (
     validate_room_name,
     validate_virtual_ip,
 )
-from .headscale import delete_node_best_effort, mint_auth_key
+from .headscale import delete_node_best_effort, mint_auth_key, purge_offline_nodes
 from .rate_limit import RateLimiter
 from .settings import settings
 
@@ -50,6 +50,7 @@ async def _ttl_loop() -> None:
         try:
             nodes = await asyncio.to_thread(_run_purges)
             await _cleanup_nodes(nodes)
+            await purge_offline_nodes()
         except Exception as e:
             log_event("purge.failed", level=logging.ERROR, error=e)
         await asyncio.sleep(60)
@@ -67,6 +68,7 @@ async def lifespan(_app: FastAPI):
         host_stale_secs=settings.host_stale_secs,
         member_stale_secs=settings.member_stale_secs,
         authkey_ephemeral=settings.authkey_ephemeral,
+        headscale_node_offline_secs=settings.headscale_node_offline_secs,
         log_dir=settings.log_dir,
     )
     task = asyncio.create_task(_ttl_loop())

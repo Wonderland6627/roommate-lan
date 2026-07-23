@@ -15,6 +15,10 @@ export async function apiDisconnect(): Promise<string> {
   return invoke<string>("disconnect");
 }
 
+export async function apiResetEngine(): Promise<string> {
+  return invoke<string>("reset_engine");
+}
+
 export async function apiGetStatus(): Promise<NetworkStatusDto> {
   return invoke<NetworkStatusDto>("get_status");
 }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import httpx
 
@@ -128,10 +129,127 @@ async def delete_node_best_effort(
                 virtual_ip=vip or None,
             )
     except Exception as e:
+            log_event(
+                "headscale.node_delete_failed",
+                level=logging.WARNING,
+                node_id=nid or None,
+                virtual_ip=vip or None,
+                error=e,
+            )
+
+
+def _node_id(node: dict[str, Any]) -> str | None:
+    nid = node.get("id") or node.get("ID")
+    if nid is None:
+        return None
+    return str(nid)
+
+
+def _node_online(node: dict[str, Any]) -> bool:
+    for key in ("online", "Online", "connected", "Connected"):
+        if key in node:
+            return bool(node[key])
+    return False
+
+
+def _parse_last_seen(node: dict[str, Any]) -> datetime | None:
+    raw = (
+        node.get("lastSeen")
+        or node.get("last_seen")
+        or node.get("LastSeen")
+        or node.get("lastSeenAt")
+    )
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        # Headscale may return unix seconds or milliseconds.
+        ts = float(raw)
+        if ts > 1e12:
+            ts /= 1000.0
+        return datetime.fromtimestamp(ts, tz=timezone.utc)
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if not text or text.startswith("0001-01-01"):
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+async def list_nodes() -> list[dict[str, Any]]:
+    """Return Headscale nodes (empty list when mock/API unavailable)."""
+    if settings.mock_auth_key or not settings.headscale_api_key:
+        return []
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(f"{_base()}/api/v1/node", headers=_headers())
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"Headscale list nodes failed ({resp.status_code}): {resp.text[:300]}"
+            )
+        data = resp.json()
+        nodes = data.get("nodes") or data.get("Nodes") or []
+        return [n for n in nodes if isinstance(n, dict)]
+
+
+async def purge_offline_nodes(
+    stale_after_secs: int | None = None,
+) -> int:
+    """Delete offline nodes whose lastSeen is older than the threshold.
+
+    Returns the number of nodes successfully deleted. No-op when threshold <= 0
+    or Headscale API is unavailable / mock mode.
+    """
+    stale = (
+        stale_after_secs
+        if stale_after_secs is not None
+        else settings.headscale_node_offline_secs
+    )
+    if stale <= 0:
+        return 0
+    if settings.mock_auth_key or not settings.headscale_api_key:
+        return 0
+
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale)
+    deleted = 0
+    try:
+        nodes = await list_nodes()
+    except Exception as e:
         log_event(
-            "headscale.node_delete_failed",
+            "headscale.node_gc_failed",
             level=logging.WARNING,
-            node_id=nid or None,
-            virtual_ip=vip or None,
             error=e,
         )
+        return 0
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        for node in nodes:
+            if _node_online(node):
+                continue
+            last_seen = _parse_last_seen(node)
+            if last_seen is None or last_seen >= cutoff:
+                continue
+            nid = _node_id(node)
+            if not nid:
+                continue
+            if await _delete_node_id(client, nid):
+                deleted += 1
+                log_event(
+                    "headscale.node_gc",
+                    node_id=nid,
+                    last_seen=last_seen.isoformat(),
+                    name=node.get("name") or node.get("Name") or None,
+                )
+            else:
+                log_event(
+                    "headscale.node_gc_miss",
+                    level=logging.WARNING,
+                    node_id=nid,
+                )
+    return deleted

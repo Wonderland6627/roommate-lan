@@ -7,7 +7,7 @@ use tauri::{Manager, RunEvent};
 
 use commands::{
     bootstrap_url, connect, disconnect, get_status, is_admin, network_service_ready, ping_peer,
-    sidecar_version,
+    reset_engine, sidecar_version,
 };
 use service::ServiceClient;
 
@@ -32,6 +32,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             connect,
             disconnect,
+            reset_engine,
             get_status,
             ping_peer,
             is_admin,

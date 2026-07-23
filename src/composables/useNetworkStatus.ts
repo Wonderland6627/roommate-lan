@@ -20,6 +20,7 @@ import {
   apiGetStatus,
   apiIsAdmin,
   apiPingPeer,
+  apiResetEngine,
 } from "../lib/tauri";
 import type {
   ConnectionPhase,
@@ -81,21 +82,39 @@ export function useNetworkStatus() {
     lastPeerBytes.clear();
   }
 
+  function formatConnectError(err: unknown, timeoutFallback: string): string {
+    if (err instanceof Error && err.message.trim()) {
+      return err.message;
+    }
+    const raw = String(err ?? "").trim();
+    return raw || timeoutFallback;
+  }
+
   function withTimeout<T>(
     promise: Promise<T>,
     ms: number,
     message: string,
   ): Promise<T> {
     return new Promise((resolve, reject) => {
-      const timer = window.setTimeout(() => reject(new Error(message)), ms);
+      let settled = false;
+      const timer = window.setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(new Error(message));
+      }, ms);
       promise.then(
         (value) => {
+          if (settled) return;
+          settled = true;
           window.clearTimeout(timer);
           resolve(value);
         },
         (err) => {
+          if (settled) return;
+          settled = true;
           window.clearTimeout(timer);
-          reject(err);
+          // Prefer the underlying invoke error over a generic timeout wrapper.
+          reject(err instanceof Error ? err : new Error(formatConnectError(err, message)));
         },
       );
     });
@@ -369,7 +388,7 @@ export function useNetworkStatus() {
       startPolling();
       startMembersPolling();
     } catch (e) {
-      const connectMsg = e instanceof Error ? e.message : String(e);
+      const connectMsg = formatConnectError(e, "隧道建立失败，请稍后重试");
       let cleanupFailed = false;
       try {
         await cleanupRoomSeat(creds, currentTraffic());
@@ -393,6 +412,27 @@ export function useNetworkStatus() {
       stopMembersPolling();
       startLobbyPolling();
       await refreshAdmin();
+    }
+  }
+
+  async function resetEngineAndRetry() {
+    if (busyAction.value) return;
+    busyAction.value = true;
+    try {
+      await apiResetEngine();
+      status.value = null;
+      phase.value = "idle";
+      const codeHint = joinCode.value.trim()
+        ? `，可使用房间码 ${joinCode.value} 再次加入`
+        : "";
+      error.value = `网络引擎已重置${codeHint}。请重新创建或加入房间。`;
+      await refreshAdmin();
+      startLobbyPolling();
+    } catch (e) {
+      phase.value = "error";
+      error.value = formatConnectError(e, "重置网络引擎失败");
+    } finally {
+      busyAction.value = false;
     }
   }
 
@@ -659,6 +699,7 @@ export function useNetworkStatus() {
     joinAndConnect,
     leaveOrDissolve,
     disconnect,
+    resetEngineAndRetry,
     memberNet,
     refreshAdmin,
     refreshRooms,

@@ -84,6 +84,14 @@ impl ServiceClient {
         Ok(resp.message.unwrap_or_else(|| "已断开连接".into()))
     }
 
+    pub fn reset_engine(&self) -> Result<String, String> {
+        let resp = self.call(Self::req(Op::ResetEngine))?;
+        if !resp.ok {
+            return Err(resp.error.unwrap_or_else(|| "重置网络引擎失败".into()));
+        }
+        Ok(resp.message.unwrap_or_else(|| "网络引擎已重置".into()))
+    }
+
     pub fn status(&self) -> Result<NetworkStatus, String> {
         let resp = self.call(Self::req(Op::Status))?;
         if !resp.ok {

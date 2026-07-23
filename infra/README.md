@@ -42,6 +42,31 @@ docker compose up -d --build room-api caddy
 
 房间 TTL 默认 4h（`ROOM_TTL_HOURS`）；主动离开后若无人则销毁。
 
+AuthKey 默认签发 **ephemeral** 节点；Room API 会按 `HEADSCALE_NODE_OFFLINE_SECS`（默认 900）定时清理长期 offline 的 Headscale 节点。升级后若仍看到历史 `Ephemeral=false` 幽灵节点，可先手动清空一次：
+
+```bash
+docker compose exec headscale headscale nodes list
+# 确认无活跃房间后按 ID 删除，例如：
+docker compose exec headscale headscale nodes delete -i 1 --force
+```
+
+之后依赖 ephemeral + 定时 GC 维持，一般不必再手工清。
+
+### 宝塔一键运维
+
+上传代码到 `/opt/roommate/infra` 后，可随时：
+
+```bash
+cd /opt/roommate/infra
+chmod +x scripts/ops-heal.sh
+./scripts/ops-heal.sh          # 检查 + 清 offline 节点 + 必要时重启
+./scripts/ops-heal.sh menu     # 交互菜单
+./scripts/ops-heal.sh rebuild  # 上传 room-api 代码后重建
+./scripts/ops-heal.sh purge --all   # 强制删光所有 offline 节点
+```
+
+脚本自动识别 `docker-compose.baota.yml`。默认只删 **offline 且 Last seen 超过 15 分钟** 的节点（`OFFLINE_MINUTES=30 ./scripts/ops-heal.sh purge` 可改阈值）。
+
 ### Room API 业务日志
 
 Room API 将房间生命周期等事件写入宿主机目录 `infra/logs/`（容器内 `/data/logs`）：

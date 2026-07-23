@@ -44,3 +44,8 @@ pub async fn connect(
 pub async fn disconnect() -> Result<String, String> {
     ServiceClient::new().disconnect()
 }
+
+#[tauri::command]
+pub async fn reset_engine() -> Result<String, String> {
+    ServiceClient::new().reset_engine()
+}

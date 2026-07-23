@@ -1,5 +1,6 @@
 //! Network engine owned exclusively by the Windows service.
 
+use std::fs;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -60,6 +61,7 @@ impl NetworkEngine {
                 req.auth_key.as_deref(),
             ),
             Op::Disconnect => self.disconnect(),
+            Op::ResetEngine => self.reset_engine(),
             Op::Status => self.status(),
             Op::Ping => self.ping(req.ip.as_deref().unwrap_or("")),
             Op::Version => self.version(),
@@ -97,6 +99,8 @@ impl NetworkEngine {
         login_server: Option<&str>,
         auth_key: Option<&str>,
     ) -> Result<String, String> {
+        // Tear down any half-open tunnel/state before a fresh up.
+        let _ = self.disconnect_inner();
         let state_dir = config::state_dir();
         self.daemon.start(&self.paths, &state_dir)?;
         let cli = TailscaleCli::from_paths(&self.paths);
@@ -116,6 +120,24 @@ impl NetworkEngine {
         self.daemon.stop()?;
         self.daemon.cleanup(&self.paths, &config::state_dir());
         *self.connected.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        Ok(())
+    }
+
+    fn reset_engine(&self) -> Response {
+        match self.reset_engine_inner() {
+            Ok(()) => Response::ok_message(Op::ResetEngine, "网络引擎已重置"),
+            Err(e) => Response::err(Op::ResetEngine, e),
+        }
+    }
+
+    fn reset_engine_inner(&self) -> Result<(), String> {
+        let _ = self.disconnect_inner();
+        let state = config::state_dir().join("tailscaled.state");
+        if state.is_file() {
+            fs::remove_file(&state).map_err(|e| {
+                format!("无法删除状态文件 {}: {e}", state.display())
+            })?;
+        }
         Ok(())
     }
 

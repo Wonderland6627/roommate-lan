@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     member_stale_secs: int = 120
     # Headscale preauth keys: ephemeral nodes auto-expire after disconnect.
     authkey_ephemeral: bool = True
+    # Delete Headscale nodes that stay offline longer than this (0 = disable GC).
+    headscale_node_offline_secs: int = 900
 
 
 settings = Settings()
