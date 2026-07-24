@@ -2,7 +2,7 @@
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { ref } from "vue";
 import type { RoomCredentials, RoomMember } from "../lib/roomApi";
-import type { ConnKind, MemberNetInfo } from "../types/network";
+import type { ConnKind, MemberNetInfo, PeerTestResult } from "../types/network";
 import ConnBadge from "./ConnBadge.vue";
 
 const props = defineProps<{
@@ -10,6 +10,7 @@ const props = defineProps<{
   members: RoomMember[];
   busy: boolean;
   netOf: (member: RoomMember) => MemberNetInfo;
+  onTestPeer: (memberId: string) => Promise<PeerTestResult>;
 }>();
 
 const emit = defineEmits<{
@@ -18,6 +19,7 @@ const emit = defineEmits<{
 
 const copiedCode = ref(false);
 const copiedIp = ref<string | null>(null);
+const testingId = ref<string | null>(null);
 
 async function copyCode() {
   try {
@@ -47,18 +49,36 @@ async function copyIp(ip: string) {
 function latencyLabel(net: MemberNetInfo): string {
   if (net.isSelf) return "—";
   if (net.kind === "pending") return "…";
-  if (net.latencyMs == null) return "…";
-  return `${net.latencyMs} ms`;
+  if (net.latencyMs != null) return `${net.latencyMs} ms`;
+  if (net.pingError) return "不通";
+  return "…";
+}
+
+function latencyTitle(net: MemberNetInfo): string | undefined {
+  if (net.isSelf || net.latencyMs != null) return undefined;
+  return net.pingError || undefined;
 }
 
 function peerKind(net: MemberNetInfo): ConnKind {
-  if (
-    net.kind === "self" ||
-    net.kind === "pending"
-  ) {
+  if (net.kind === "self" || net.kind === "pending") {
     return "unknown";
   }
   return net.kind;
+}
+
+function canTest(member: RoomMember): boolean {
+  const net = props.netOf(member);
+  return !net.isSelf && !!net.virtualIp;
+}
+
+async function runTest(member: RoomMember) {
+  if (!canTest(member) || testingId.value || props.busy) return;
+  testingId.value = member.id;
+  try {
+    await props.onTestPeer(member.id);
+  } finally {
+    testingId.value = null;
+  }
 }
 </script>
 
@@ -110,7 +130,24 @@ function peerKind(net: MemberNetInfo): ConnKind {
               :kind="peerKind(netOf(m))"
               :relay="netOf(m).relay"
             />
-            <span class="rtt">{{ latencyLabel(netOf(m)) }}</span>
+            <div class="rtt-row">
+              <span
+                class="rtt"
+                :class="{ bad: !netOf(m).isSelf && netOf(m).latencyMs == null && !!netOf(m).pingError }"
+                :title="latencyTitle(netOf(m))"
+              >
+                {{ latencyLabel(netOf(m)) }}
+              </span>
+              <button
+                v-if="canTest(m)"
+                type="button"
+                class="test"
+                :disabled="busy || testingId !== null"
+                @click="runTest(m)"
+              >
+                {{ testingId === m.id ? "测…" : "测试" }}
+              </button>
+            </div>
           </div>
         </li>
       </ul>
@@ -285,10 +322,36 @@ function peerKind(net: MemberNetInfo): ConnKind {
   font-weight: 600;
   color: var(--ink-muted);
 }
+.rtt-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
 .rtt {
   font-variant-numeric: tabular-nums;
   font-size: 0.75rem;
   color: var(--ink-muted);
+}
+.rtt.bad {
+  color: var(--warn);
+}
+.test {
+  border: none;
+  border-radius: 6px;
+  padding: 0.15rem 0.4rem;
+  font-size: 0.65rem;
+  cursor: pointer;
+  color: var(--ink);
+  background: rgba(232, 240, 236, 0.1);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.test:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.test:not(:disabled):hover {
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, var(--line));
 }
 .empty {
   margin: 0;

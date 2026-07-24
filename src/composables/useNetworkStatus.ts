@@ -26,6 +26,7 @@ import type {
   ConnectionPhase,
   MemberNetInfo,
   NetworkStatusDto,
+  PeerTestResult,
   PeerView,
 } from "../types/network";
 
@@ -37,6 +38,9 @@ const PRESENCE_REFRESH_MS = 60_000;
 /** Must exceed service-side tailscale up (~45s) + Running/IP wait. */
 const CONNECT_TIMEOUT_MS = 60_000;
 const ROOM_CLEANUP_RETRIES = 3;
+const PING_ERROR_MAX = 80;
+
+const NO_VIP_MSG = "对方尚未上报虚拟 IP，请稍等或让对方重进房";
 
 const LS_DISPLAY = "roommate.displayName";
 const LS_CODE = "roommate.lastCode";
@@ -49,6 +53,7 @@ export function useNetworkStatus() {
   const status = shallowRef<NetworkStatusDto | null>(null);
   const isAdmin = ref(true);
   const latencies = ref<Record<string, number>>({});
+  const pingErrors = ref<Record<string, string>>({});
 
   const bootstrapUrl = ref("");
   const rooms = ref<RoomSummary[]>([]);
@@ -88,6 +93,58 @@ export function useNetworkStatus() {
     }
     const raw = String(err ?? "").trim();
     return raw || timeoutFallback;
+  }
+
+  function truncatePingDetail(raw: string): string {
+    const t = raw.trim().replace(/\s+/g, " ");
+    if (t.length <= PING_ERROR_MAX) return t;
+    return `${t.slice(0, PING_ERROR_MAX - 1)}…`;
+  }
+
+  /** Map raw ping_peer errors to short user-facing labels (detail kept in store). */
+  function formatPingError(err: unknown): string {
+    const raw = formatConnectError(err, "连通失败");
+    const lower = raw.toLowerCase();
+    if (lower.includes("timeout") || raw.includes("超时")) {
+      return truncatePingDetail(`超时（对端或中继不可达）: ${raw}`);
+    }
+    if (
+      lower.includes("no route") ||
+      lower.includes("offline") ||
+      lower.includes("does not")
+    ) {
+      return truncatePingDetail(`隧道未通（status 可能看不到对方）: ${raw}`);
+    }
+    if (
+      lower.includes("pipe") ||
+      raw.includes("服务") ||
+      lower.includes("not ready")
+    ) {
+      return truncatePingDetail(`本机网络服务异常: ${raw}`);
+    }
+    return truncatePingDetail(raw.includes("连通") ? raw : `连通失败: ${raw}`);
+  }
+
+  function clearPingState() {
+    latencies.value = {};
+    pingErrors.value = {};
+  }
+
+  function setPingSuccess(memberId: string, ms: number) {
+    const nextLat = { ...latencies.value, [memberId]: ms };
+    latencies.value = nextLat;
+    if (!(memberId in pingErrors.value)) return;
+    const nextErr = { ...pingErrors.value };
+    delete nextErr[memberId];
+    pingErrors.value = nextErr;
+  }
+
+  function setPingFailure(memberId: string, message: string) {
+    pingErrors.value = { ...pingErrors.value, [memberId]: message };
+    if (!(memberId in latencies.value)) return;
+    const nextLat = { ...latencies.value };
+    delete nextLat[memberId];
+    latencies.value = nextLat;
   }
 
   function withTimeout<T>(
@@ -317,17 +374,49 @@ export function useNetworkStatus() {
         const ip = member.virtualIp!.trim();
         try {
           const ms = await apiPingPeer(ip);
-          latencies.value = { ...latencies.value, [member.id]: ms };
-        } catch {
-          // ignore single-member ping failures
+          setPingSuccess(member.id, ms);
+        } catch (e) {
+          setPingFailure(member.id, formatPingError(e));
         }
       }),
     );
   }
 
+  async function testPeer(memberId: string): Promise<PeerTestResult> {
+    const current = session.value;
+    if (!current || phase.value !== "connected") {
+      const error = "未连接房间";
+      setPingFailure(memberId, error);
+      return { ok: false, error };
+    }
+
+    const member = members.value.find((m) => m.id === memberId);
+    if (!member || member.id === current.memberId) {
+      const error = "无法测试该成员";
+      return { ok: false, error };
+    }
+
+    const vip = member.virtualIp?.trim() || "";
+    if (!vip) {
+      setPingFailure(memberId, NO_VIP_MSG);
+      return { ok: false, error: NO_VIP_MSG };
+    }
+
+    try {
+      const ms = await apiPingPeer(vip);
+      setPingSuccess(memberId, ms);
+      return { ok: true, ms };
+    } catch (e) {
+      const error = formatPingError(e);
+      setPingFailure(memberId, error);
+      return { ok: false, error };
+    }
+  }
+
   function startPolling() {
     stopPolling();
     void pullStatus();
+    void pullPings();
     statusTimer = setInterval(() => void pullStatus(), STATUS_MS);
     pingTimer = setInterval(() => void pullPings(), PING_MS);
   }
@@ -373,6 +462,7 @@ export function useNetworkStatus() {
     error.value = null;
     lastReportedKey.value = "";
     lastPresenceAt.value = 0;
+    clearPingState();
     resetTrafficAccum();
     stopLobbyPolling();
     try {
@@ -562,7 +652,7 @@ export function useNetworkStatus() {
         session.value = null;
         members.value = [];
         status.value = null;
-        latencies.value = {};
+        clearPingState();
         lastReportedKey.value = "";
         lastPresenceAt.value = 0;
         resetTrafficAccum();
@@ -577,7 +667,7 @@ export function useNetworkStatus() {
     session.value = null;
     members.value = [];
     status.value = null;
-    latencies.value = {};
+    clearPingState();
     lastReportedKey.value = "";
     lastPresenceAt.value = 0;
     resetTrafficAccum();
@@ -621,11 +711,13 @@ export function useNetworkStatus() {
       ((!!current.memberId && member.id === current.memberId) ||
         (!!vip && selfIps.includes(vip)));
     const virtualIp = vip || null;
+    const pingError = pingErrors.value[member.id] ?? null;
 
     if (isSelf) {
       return {
         kind: "self",
         latencyMs: null,
+        pingError: null,
         virtualIp: virtualIp ?? status.value?.selfIps?.[0] ?? null,
         isSelf: true,
       };
@@ -635,6 +727,7 @@ export function useNetworkStatus() {
       return {
         kind: "pending",
         latencyMs: null,
+        pingError,
         virtualIp: null,
         isSelf: false,
       };
@@ -647,6 +740,7 @@ export function useNetworkStatus() {
       return {
         kind: virtualIp ? "idle" : "pending",
         latencyMs: latencies.value[member.id] ?? null,
+        pingError,
         virtualIp,
         isSelf: false,
       };
@@ -656,6 +750,7 @@ export function useNetworkStatus() {
       kind: peer.conn,
       relay: peer.relay,
       latencyMs: latencies.value[member.id] ?? peer.latencyMs ?? null,
+      pingError,
       virtualIp: virtualIp ?? peer.ips[0] ?? null,
       isSelf: false,
     };
@@ -701,6 +796,7 @@ export function useNetworkStatus() {
     disconnect,
     resetEngineAndRetry,
     memberNet,
+    testPeer,
     refreshAdmin,
     refreshRooms,
   };

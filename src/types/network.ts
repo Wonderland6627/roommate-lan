@@ -43,6 +43,12 @@ export interface MemberNetInfo {
   kind: MemberNetKind;
   relay?: string | null;
   latencyMs: number | null;
+  /** Short user-facing ping failure; full detail may be longer in store. */
+  pingError?: string | null;
   virtualIp: string | null;
   isSelf: boolean;
 }
+
+export type PeerTestResult =
+  | { ok: true; ms: number }
+  | { ok: false; error: string };

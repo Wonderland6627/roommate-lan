@@ -1,6 +1,6 @@
 [package]
 name = "roommate"
-version = "0.5.3"
+version = "0.5.4"
 description = "Roommate — zero-config Steam LAN via Headscale"
 authors = ["Wonderland"]
 edition = "2021"

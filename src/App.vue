@@ -22,6 +22,7 @@ const {
   leaveOrDissolve,
   resetEngineAndRetry,
   memberNet,
+  testPeer,
   refreshRooms,
 } = useNetworkStatus();
 
@@ -105,6 +106,7 @@ const backendLabel = computed(() => {
       :members="members"
       :busy="busy"
       :net-of="memberNet"
+      :on-test-peer="testPeer"
       @leave="leaveOrDissolve"
     />
 
