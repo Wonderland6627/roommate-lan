@@ -13,6 +13,10 @@ export type RoomMember = {
   joinedAt: number;
   nodeId?: string | null;
   virtualIp?: string | null;
+  /** Public egress IP seen by room-api (HTTPS). */
+  egressIp?: string | null;
+  /** Geo label from room-api, e.g. "日本 · 東京都 · 东京". */
+  geoLabel?: string | null;
 };
 
 export type RoomCredentials = {

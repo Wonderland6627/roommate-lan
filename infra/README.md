@@ -25,6 +25,10 @@ chmod +x scripts/*.sh
 docker compose exec headscale headscale apikeys create
 # 把输出写入 .env 的 HEADSCALE_API_KEY=...
 docker compose up -d --build room-api caddy
+
+# （可选）成员公网 IP 地理位置：免注册下载 DB-IP City Lite：
+./scripts/fetch-geoip.sh
+./scripts/ops-heal.sh rebuild
 ```
 
 客户端公开包只需内嵌同一 `ROOMMATE_LOGIN_SERVER=https://${HS_DOMAIN}`（Room API 挂在 `/api/*`）。**普通用户无需再配置 `.env` AuthKey**。
@@ -78,6 +82,21 @@ Room API 将房间生命周期等事件写入宿主机目录 `infra/logs/`（容
 - 不记录 AuthKey、memberToken、完整房间短码
 
 也可：`docker compose logs -f room-api`（同一内容也会打到 stdout）。
+
+### 成员地理位置（GeoIP）
+
+Room API 用进房 / 心跳 HTTPS 的公网源 IP，经离线 **DB-IP City Lite** MMDB 解析国家/省州/城市，写入 `egressIp` / `geoLabel` 与业务日志（CC BY 4.0，免注册）。
+
+```bash
+cd /opt/roommate/infra
+chmod +x scripts/*.sh
+./scripts/fetch-geoip.sh
+./scripts/ops-heal.sh rebuild
+```
+
+会生成 `infra/geoip/city.mmdb`（勿提交 git）。库文件建议每月重新 fetch。成员列表旁有 DB-IP 署名链接（许可要求）。
+
+无 MMDB 时服务照常运行，仅无地理位置文案。
 
 ### 房间流量统计（宝塔可查）
 

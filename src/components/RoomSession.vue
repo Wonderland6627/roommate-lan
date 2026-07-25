@@ -71,6 +71,15 @@ function canTest(member: RoomMember): boolean {
   return !net.isSelf && !!net.virtualIp;
 }
 
+function egressLine(member: RoomMember): string | null {
+  const ip = member.egressIp?.trim() || "";
+  const geo = member.geoLabel?.trim() || "";
+  if (ip && geo) return `${ip} · ${geo}`;
+  if (geo) return geo;
+  if (ip) return ip;
+  return null;
+}
+
 async function runTest(member: RoomMember) {
   if (!canTest(member) || testingId.value || props.busy) return;
   testingId.value = member.id;
@@ -100,6 +109,13 @@ async function runTest(member: RoomMember) {
       <header class="head">
         <h2>房间成员</h2>
         <span class="count">{{ members.length }}</span>
+        <a
+          class="geo-attr"
+          href="https://db-ip.com"
+          target="_blank"
+          rel="noopener noreferrer"
+          title="IP Geolocation by DB-IP"
+        >DB-IP</a>
       </header>
       <ul v-if="members.length">
         <li v-for="m in members" :key="m.id" class="member">
@@ -121,6 +137,12 @@ async function runTest(member: RoomMember) {
               </span>
             </button>
             <span v-else class="ip muted">连接中…</span>
+            <span
+              v-for="line in [egressLine(m)]"
+              v-show="!!line"
+              :key="`${m.id}-egress`"
+              class="egress"
+            >{{ line }}</span>
           </div>
           <div class="side">
             <span v-if="netOf(m).isSelf" class="self-badge">本机</span>
@@ -243,6 +265,17 @@ async function runTest(member: RoomMember) {
   font-size: 0.75rem;
   color: var(--accent);
 }
+.geo-attr {
+  margin-left: auto;
+  font-size: 0.65rem;
+  color: var(--ink-muted);
+  opacity: 0.65;
+  text-decoration: none;
+}
+.geo-attr:hover {
+  opacity: 1;
+  color: var(--accent);
+}
 .members ul {
   list-style: none;
   margin: 0;
@@ -303,6 +336,13 @@ async function runTest(member: RoomMember) {
 }
 .ip.muted {
   cursor: default;
+}
+.egress {
+  font-size: 0.72rem;
+  color: var(--ink-muted);
+  opacity: 0.85;
+  line-height: 1.35;
+  word-break: break-all;
 }
 .hint-inline {
   font-size: 0.65rem;

@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     authkey_ephemeral: bool = True
     # Delete Headscale nodes that stay offline longer than this (0 = disable GC).
     headscale_node_offline_secs: int = 900
+    # DB-IP City Lite MMDB path; empty labels if missing.
+    geoip_db_path: str = "/geoip/city.mmdb"
 
 
 settings = Settings()

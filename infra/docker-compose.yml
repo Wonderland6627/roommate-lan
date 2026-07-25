@@ -37,9 +37,11 @@ services:
       LOG_DIR: ${LOG_DIR:-/data/logs}
       LOG_RETAIN_DAYS: ${LOG_RETAIN_DAYS:-14}
       MOCK_AUTH_KEY: ${MOCK_AUTH_KEY:-}
+      GEOIP_DB_PATH: ${GEOIP_DB_PATH:-/geoip/city.mmdb}
     volumes:
       - room-api-data:/data
       - ./logs:/data/logs
+      - ./geoip:/geoip:ro
     depends_on:
       - headscale
     expose:

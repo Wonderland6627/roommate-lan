@@ -51,6 +51,8 @@ infra/logs/*
 !infra/logs/traffic/
 infra/logs/traffic/*
 !infra/logs/traffic/.gitkeep
+infra/geoip/*
+!infra/geoip/.gitkeep
 
 # Tauri updater private keys (public key lives in tauri.conf.json)
 src-tauri/keys/*.key

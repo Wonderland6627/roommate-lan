@@ -20,6 +20,7 @@ from .db import (
     validate_room_name,
     validate_virtual_ip,
 )
+from .geoip import geo_label_for
 from .headscale import delete_node_best_effort, mint_auth_key, purge_offline_nodes
 from .rate_limit import RateLimiter
 from .settings import settings
@@ -69,6 +70,7 @@ async def lifespan(_app: FastAPI):
         member_stale_secs=settings.member_stale_secs,
         authkey_ephemeral=settings.authkey_ephemeral,
         headscale_node_offline_secs=settings.headscale_node_offline_secs,
+        geoip_db_path=settings.geoip_db_path,
         log_dir=settings.log_dir,
     )
     task = asyncio.create_task(_ttl_loop())
@@ -115,12 +117,23 @@ class PresenceBody(BaseModel):
 
 
 def _client_ip(request: Request) -> str:
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip and real_ip.strip():
+        return real_ip.strip()
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
         return forwarded.split(",")[0].strip()
     if request.client:
         return request.client.host
     return "unknown"
+
+
+def _egress_fields(ip: str) -> tuple[str | None, str | None]:
+    cleaned = (ip or "").strip()
+    if not cleaned or cleaned == "unknown":
+        return None, None
+    label = geo_label_for(cleaned) or None
+    return cleaned, label
 
 
 def _room_public(room: Any) -> dict[str, Any]:
@@ -141,6 +154,8 @@ def _member_public(m: Any) -> dict[str, Any]:
         "joinedAt": m.joined_at,
         "nodeId": m.node_id,
         "virtualIp": m.virtual_ip,
+        "egressIp": m.egress_ip,
+        "geoLabel": m.geo_label,
     }
 
 
@@ -183,7 +198,13 @@ async def create_room(body: CreateRoomBody, request: Request) -> dict[str, Any]:
         )
         raise HTTPException(502, f"无法签发进网凭证: {e}") from e
 
-    room, member, code, member_token = db.create_room(name, display)
+    egress_ip, geo_label = _egress_fields(ip)
+    room, member, code, member_token = db.create_room(
+        name,
+        display,
+        egress_ip=egress_ip,
+        geo_label=geo_label,
+    )
     log_event(
         "room.created",
         room_id=room.id,
@@ -191,6 +212,8 @@ async def create_room(body: CreateRoomBody, request: Request) -> dict[str, Any]:
         host=member.display_name,
         member_id=member.id,
         ip=ip,
+        egress_ip=egress_ip,
+        geo_label=geo_label,
     )
     return {
         "code": code,
@@ -252,7 +275,13 @@ async def join_room(body: JoinBody, request: Request) -> dict[str, Any]:
         raise HTTPException(502, f"无法签发进网凭证: {e}") from e
 
     try:
-        added = db.add_member(room.id, display)
+        egress_ip, geo_label = _egress_fields(ip)
+        added = db.add_member(
+            room.id,
+            display,
+            egress_ip=egress_ip,
+            geo_label=geo_label,
+        )
     except LookupError as e:
         log_event(
             "join.rejected",
@@ -276,6 +305,8 @@ async def join_room(body: JoinBody, request: Request) -> dict[str, Any]:
                 old_member_id=old.id,
                 new_member_id=member.id,
                 ip=ip,
+                egress_ip=egress_ip,
+                geo_label=geo_label,
             )
         await _cleanup_nodes([(m.node_id, m.virtual_ip) for m in added.replaced])
 
@@ -288,6 +319,8 @@ async def join_room(body: JoinBody, request: Request) -> dict[str, Any]:
         member_id=member.id,
         replaced=len(added.replaced),
         ip=ip,
+        egress_ip=egress_ip,
+        geo_label=geo_label,
     )
     return {
         "code": code,
@@ -330,6 +363,7 @@ def report_presence(
         virtual_ip = validate_virtual_ip(body.virtualIp)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+    egress_ip, geo_label = _egress_fields(ip)
     try:
         result = db.update_presence(
             room_id,
@@ -338,6 +372,8 @@ def report_presence(
             virtual_ip,
             relay_bytes=body.relayBytes,
             p2p_bytes=body.p2pBytes,
+            egress_ip=egress_ip,
+            geo_label=geo_label,
         )
     except PermissionError as e:
         log_event(
@@ -357,7 +393,7 @@ def report_presence(
             error=e,
         )
         raise HTTPException(404, str(e)) from e
-    if result.first_presence:
+    if result.first_presence or result.egress_changed:
         log_event(
             "member.presence",
             room_id=room_id,
@@ -366,6 +402,10 @@ def report_presence(
             node_id=result.member.node_id,
             virtual_ip=result.member.virtual_ip,
             ip=ip,
+            egress_ip=result.member.egress_ip,
+            geo_label=result.member.geo_label,
+            first_presence=result.first_presence,
+            egress_changed=result.egress_changed,
         )
     return {"status": "ok", "member": _member_public(result.member)}
 
@@ -402,6 +442,8 @@ async def leave_room(
         member_id=result.member_id,
         room_deleted=result.room_deleted,
         ip=ip,
+        egress_ip=result.egress_ip,
+        geo_label=result.geo_label,
     )
     if result.room_deleted:
         log_event(
@@ -422,6 +464,7 @@ async def dissolve_room(
     if not limiter.allow(f"dissolve:{ip}"):
         log_event("rate_limited", level=logging.WARNING, action="dissolve", ip=ip)
         raise HTTPException(429, "请求过于频繁，请稍后再试")
+    egress_ip, geo_label = _egress_fields(ip)
     try:
         result = db.dissolve(
             room_id,
@@ -445,6 +488,8 @@ async def dissolve_room(
         by=result.display_name,
         member_id=result.member_id,
         ip=ip,
+        egress_ip=egress_ip,
+        geo_label=geo_label,
     )
     if result.node_ids:
         await _cleanup_nodes(result.node_ids)

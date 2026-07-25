@@ -76,6 +76,8 @@ class Member:
     presence_at: int | None = None
     relay_bytes: int = 0
     p2p_bytes: int = 0
+    egress_ip: str | None = None
+    geo_label: str | None = None
 
 
 @dataclass
@@ -94,6 +96,8 @@ class LeaveResult:
     room_deleted: bool
     node_id: str | None = None
     virtual_ip: str | None = None
+    egress_ip: str | None = None
+    geo_label: str | None = None
     traffic: RoomTrafficSnapshot | None = None
 
 
@@ -111,6 +115,7 @@ class DissolveResult:
 class PresenceResult:
     member: Member
     first_presence: bool
+    egress_changed: bool = False
 
 
 @dataclass
@@ -181,6 +186,8 @@ def _member_from_row(r: sqlite3.Row) -> Member:
         presence_at=r["presence_at"] if "presence_at" in keys else None,
         relay_bytes=int(r["relay_bytes"]) if "relay_bytes" in keys and r["relay_bytes"] is not None else 0,
         p2p_bytes=int(r["p2p_bytes"]) if "p2p_bytes" in keys and r["p2p_bytes"] is not None else 0,
+        egress_ip=r["egress_ip"] if "egress_ip" in keys else None,
+        geo_label=r["geo_label"] if "geo_label" in keys else None,
     )
 
 
@@ -293,6 +300,10 @@ class Database:
             conn.execute(
                 "ALTER TABLE members ADD COLUMN p2p_bytes INTEGER NOT NULL DEFAULT 0"
             )
+        if "egress_ip" not in cols:
+            conn.execute("ALTER TABLE members ADD COLUMN egress_ip TEXT")
+        if "geo_label" not in cols:
+            conn.execute("ALTER TABLE members ADD COLUMN geo_label TEXT")
 
     def purge_expired(self) -> list[PurgedRoom]:
         now = _now()
@@ -407,7 +418,14 @@ class Database:
             )
         return purged
 
-    def create_room(self, name: str, display_name: str) -> tuple[Room, Member, str, str]:
+    def create_room(
+        self,
+        name: str,
+        display_name: str,
+        *,
+        egress_ip: str | None = None,
+        geo_label: str | None = None,
+    ) -> tuple[Room, Member, str, str]:
         """Returns (room, host_member, plaintext_code, member_token)."""
         self.purge_expired()
         room_id = str(uuid.uuid4())
@@ -416,6 +434,8 @@ class Database:
         token_hash = hashlib.sha256(member_token.encode()).hexdigest()
         now = _now()
         expires = now + settings.room_ttl_hours * 3600
+        egress = (egress_ip or "").strip() or None
+        geo = (geo_label or "").strip() or None
 
         with self.connect() as conn:
             code = None
@@ -443,10 +463,11 @@ class Database:
             conn.execute(
                 """
                 INSERT INTO members
-                  (id, room_id, member_token_hash, display_name, is_host, joined_at)
-                VALUES (?, ?, ?, ?, 1, ?)
+                  (id, room_id, member_token_hash, display_name, is_host, joined_at,
+                   egress_ip, geo_label)
+                VALUES (?, ?, ?, ?, 1, ?, ?, ?)
                 """,
-                (member_id, room_id, token_hash, display_name, now),
+                (member_id, room_id, token_hash, display_name, now, egress, geo),
             )
 
         room = Room(
@@ -466,6 +487,8 @@ class Database:
             node_id=None,
             virtual_ip=None,
             presence_at=None,
+            egress_ip=egress,
+            geo_label=geo,
         )
         return room, member, code, member_token
 
@@ -546,12 +569,21 @@ class Database:
             member_count=int(r["member_count"]),
         )
 
-    def add_member(self, room_id: str, display_name: str) -> AddMemberResult:
+    def add_member(
+        self,
+        room_id: str,
+        display_name: str,
+        *,
+        egress_ip: str | None = None,
+        geo_label: str | None = None,
+    ) -> AddMemberResult:
         """Insert a guest member; replace any prior non-host rows with the same display name."""
         member_id = str(uuid.uuid4())
         member_token = new_member_token()
         token_hash = hashlib.sha256(member_token.encode()).hexdigest()
         now = _now()
+        egress = (egress_ip or "").strip() or None
+        geo = (geo_label or "").strip() or None
         with self.connect() as conn:
             room = conn.execute(
                 "SELECT id FROM rooms WHERE id = ? AND expires_at > ?",
@@ -582,10 +614,11 @@ class Database:
             conn.execute(
                 """
                 INSERT INTO members
-                  (id, room_id, member_token_hash, display_name, is_host, joined_at)
-                VALUES (?, ?, ?, ?, 0, ?)
+                  (id, room_id, member_token_hash, display_name, is_host, joined_at,
+                   egress_ip, geo_label)
+                VALUES (?, ?, ?, ?, 0, ?, ?, ?)
                 """,
-                (member_id, room_id, token_hash, display_name, now),
+                (member_id, room_id, token_hash, display_name, now, egress, geo),
             )
         member = Member(
             id=member_id,
@@ -596,6 +629,8 @@ class Database:
             node_id=None,
             virtual_ip=None,
             presence_at=None,
+            egress_ip=egress,
+            geo_label=geo,
         )
         return AddMemberResult(
             member=member, member_token=member_token, replaced=replaced
@@ -635,6 +670,9 @@ class Database:
         virtual_ip: str,
         relay_bytes: int | None = None,
         p2p_bytes: int | None = None,
+        *,
+        egress_ip: str | None = None,
+        geo_label: str | None = None,
     ) -> PresenceResult:
         member = self.member_by_token(room_id, member_token)
         if not member:
@@ -646,22 +684,49 @@ class Database:
         now = _now()
         relay = max(member.relay_bytes, _clamp_bytes(relay_bytes))
         p2p = max(member.p2p_bytes, _clamp_bytes(p2p_bytes))
+        new_egress = (egress_ip or "").strip() or None
+        new_geo = (geo_label or "").strip() or None
+        if new_egress is None and new_geo is None:
+            # Keep prior geo when caller did not supply a usable IP.
+            store_egress = member.egress_ip
+            store_geo = member.geo_label
+            egress_changed = False
+        else:
+            store_egress = new_egress
+            store_geo = new_geo
+            egress_changed = (member.egress_ip or None) != store_egress
         with self.connect() as conn:
             conn.execute(
                 """
                 UPDATE members
                 SET node_id = ?, virtual_ip = ?, presence_at = ?,
-                    relay_bytes = ?, p2p_bytes = ?
+                    relay_bytes = ?, p2p_bytes = ?,
+                    egress_ip = ?, geo_label = ?
                 WHERE id = ?
                 """,
-                (node_id, virtual_ip, now, relay, p2p, member.id),
+                (
+                    node_id,
+                    virtual_ip,
+                    now,
+                    relay,
+                    p2p,
+                    store_egress,
+                    store_geo,
+                    member.id,
+                ),
             )
         member.node_id = node_id
         member.virtual_ip = virtual_ip
         member.presence_at = now
         member.relay_bytes = relay
         member.p2p_bytes = p2p
-        return PresenceResult(member=member, first_presence=first_presence)
+        member.egress_ip = store_egress
+        member.geo_label = store_geo
+        return PresenceResult(
+            member=member,
+            first_presence=first_presence,
+            egress_changed=egress_changed,
+        )
 
     def update_member_traffic(
         self,
@@ -734,6 +799,8 @@ class Database:
             room_deleted=room_deleted,
             node_id=member.node_id,
             virtual_ip=member.virtual_ip,
+            egress_ip=member.egress_ip,
+            geo_label=member.geo_label,
             traffic=traffic if room_deleted else None,
         )
 
