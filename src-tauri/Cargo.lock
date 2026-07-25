@@ -3041,7 +3041,7 @@ dependencies = [
 
 [[package]]
 name = "roommate"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "dirs",
  "pretty_assertions",

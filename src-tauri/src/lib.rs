@@ -44,7 +44,8 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|_app_handle, event| {
             if let RunEvent::Exit = event {
-                // Ask service to tear down the tunnel; keep the Windows service itself running.
+                // Stop GUI lease heartbeat, then ask service to tear down the tunnel.
+                service::stop_lease_heartbeat();
                 let _ = ServiceClient::new().disconnect();
             }
         });

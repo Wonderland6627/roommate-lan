@@ -1,5 +1,6 @@
 mod client;
 mod engine;
+mod lease;
 mod protocol;
 
 #[cfg(windows)]
@@ -8,6 +9,7 @@ mod pipe;
 mod windows_svc;
 
 pub use client::ServiceClient;
+pub use lease::{start as start_lease_heartbeat, stop as stop_lease_heartbeat};
 pub use protocol::{Op, Request, Response};
 
 #[cfg(windows)]

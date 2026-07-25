@@ -35,6 +35,27 @@ export type TrafficReport = {
   p2pBytes: number;
 };
 
+const REQUEST_TIMEOUT_MS = 10_000;
+
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+/** Credential invalid or room already gone — stop retrying / leave room state. */
+export function isFatalRoomError(err: unknown): boolean {
+  return err instanceof ApiError && (err.status === 403 || err.status === 404);
+}
+
+export function isRateLimitedError(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 429;
+}
+
 function apiErrorMessage(status: number, body: string): string {
   try {
     const parsed = JSON.parse(body) as { detail?: unknown };
@@ -42,7 +63,12 @@ function apiErrorMessage(status: number, body: string): string {
   } catch {
     // ignore
   }
-  if (body.trim()) return body.trim().slice(0, 200);
+  if (body.trim()) {
+    const trimmed = body.trim();
+    // Avoid dumping HTML gateway pages into the UI.
+    if (trimmed.startsWith("<")) return `请求失败 (${status})`;
+    return trimmed.slice(0, 200);
+  }
   return `请求失败 (${status})`;
 }
 
@@ -52,22 +78,30 @@ async function request<T>(
   init?: RequestInit,
 ): Promise<T> {
   const url = `${baseUrl.replace(/\/$/, "")}${path}`;
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   let resp: Response;
   try {
     resp = await fetch(url, {
       ...init,
+      signal: controller.signal,
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
         ...(init?.headers ?? {}),
       },
     });
-  } catch {
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new Error("房间服务请求超时，请稍后重试");
+    }
     throw new Error("无法连接房间服务，请检查网络或 Login Server 配置");
+  } finally {
+    window.clearTimeout(timer);
   }
   const text = await resp.text();
   if (!resp.ok) {
-    throw new Error(apiErrorMessage(resp.status, text));
+    throw new ApiError(resp.status, apiErrorMessage(resp.status, text));
   }
   if (!text) {
     return {} as T;
@@ -117,8 +151,13 @@ export async function joinRoom(
 export async function listMembers(
   baseUrl: string,
   roomId: string,
+  memberToken: string,
 ): Promise<{ room: RoomSummary; members: RoomMember[] }> {
-  return request(baseUrl, `/api/rooms/${encodeURIComponent(roomId)}/members`);
+  return request(baseUrl, `/api/rooms/${encodeURIComponent(roomId)}/members`, {
+    headers: {
+      "X-Member-Token": memberToken,
+    },
+  });
 }
 
 export async function reportPresence(

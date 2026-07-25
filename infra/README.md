@@ -40,7 +40,7 @@ docker compose up -d --build room-api caddy
 | GET | `/api/rooms` | 未过期房间列表（无短码） |
 | POST | `/api/rooms` | 创建房间：`{ name, displayName }` → 4 位码 + AuthKey |
 | POST | `/api/join` | 加入：`{ code, displayName }` |
-| GET | `/api/rooms/{id}/members` | 成员显示名 |
+| GET | `/api/rooms/{id}/members` | 成员列表（需 `X-Member-Token`） |
 | POST | `/api/rooms/{id}/leave` | 退出：`{ memberToken }` |
 | POST | `/api/rooms/{id}/dissolve` | 房主解散：`{ memberToken }` |
 

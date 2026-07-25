@@ -3,10 +3,8 @@ use crate::tailscale::NetworkStatus;
 
 #[tauri::command]
 pub async fn get_status() -> Result<NetworkStatus, String> {
-    let client = ServiceClient::new();
-    // Status polling also refreshes the service-side lease.
-    let _ = client.heartbeat();
-    client.status()
+    // Lease keepalive is owned by the Rust-side heartbeat thread after connect.
+    ServiceClient::new().status()
 }
 
 #[tauri::command]

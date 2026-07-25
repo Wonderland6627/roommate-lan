@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     headscale_user: str = "roommate"
     # When set (e.g. local tests), skip Headscale and return this key.
     mock_auth_key: str = ""
-    rate_limit_per_minute: int = 30
+    rate_limit_per_minute: int = 60
     join_fail_limit_per_minute: int = 20
     # Drop rooms whose host stopped reporting presence (app crash / close without dissolve).
     host_stale_secs: int = 900

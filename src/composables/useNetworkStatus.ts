@@ -2,6 +2,8 @@ import { onMounted, onUnmounted, ref, shallowRef } from "vue";
 import {
   createRoom,
   dissolveRoom,
+  isFatalRoomError,
+  isRateLimitedError,
   joinRoom,
   leaveOrDissolveKeepalive,
   leaveRoom,
@@ -32,9 +34,13 @@ import type {
 
 const STATUS_MS = 2000;
 const PING_MS = 5000;
-const LOBBY_MS = 5000;
-const MEMBERS_MS = 3000;
+const LOBBY_MS = 8000;
+const MEMBERS_MS = 5000;
 const PRESENCE_REFRESH_MS = 60_000;
+const PRESENCE_RETRY_MS = 10_000;
+const RATE_LIMIT_BACKOFF_MS = 30_000;
+const PING_FAIL_BACKOFF_MS = 15_000;
+const PING_CONCURRENCY = 2;
 /** Must exceed service-side tailscale up (~45s) + Running/IP wait. */
 const CONNECT_TIMEOUT_MS = 60_000;
 const ROOM_CLEANUP_RETRIES = 3;
@@ -70,6 +76,8 @@ export function useNetworkStatus() {
   const busyAction = ref(false);
   const lastReportedKey = ref("");
   const lastPresenceAt = ref(0);
+  /** True only after the last presence attempt succeeded. */
+  let lastPresenceOk = false;
 
   /** Session-local path-classified traffic (not reactive UI state). */
   let relayBytesAccum = 0;
@@ -80,6 +88,15 @@ export function useNetworkStatus() {
   let pingTimer: ReturnType<typeof setInterval> | null = null;
   let lobbyTimer: ReturnType<typeof setInterval> | null = null;
   let membersTimer: ReturnType<typeof setInterval> | null = null;
+
+  let statusInFlight = false;
+  let pingInFlight = false;
+  let lobbyInFlight = false;
+  let membersInFlight = false;
+  let roomGoneHandling = false;
+  let membersBackoffUntil = 0;
+  let lobbyBackoffUntil = 0;
+  const pingFailUntil = new Map<string, number>();
 
   function resetTrafficAccum() {
     relayBytesAccum = 0;
@@ -194,6 +211,8 @@ export function useNetworkStatus() {
         return;
       } catch (e) {
         lastError = e;
+        // Fatal auth/room errors will never succeed on retry.
+        if (isFatalRoomError(e)) throw e;
         if (i + 1 < attempts) {
           await sleep(300 * (i + 1));
         }
@@ -209,23 +228,59 @@ export function useNetworkStatus() {
     traffic: TrafficReport,
   ): Promise<void> {
     if (!bootstrapUrl.value) return;
-    await withRetries(async () => {
-      if (creds.isHost) {
-        await dissolveRoom(
-          bootstrapUrl.value,
-          creds.room.id,
-          creds.memberToken,
-          traffic,
-        );
-      } else {
-        await leaveRoom(
-          bootstrapUrl.value,
-          creds.room.id,
-          creds.memberToken,
-          traffic,
-        );
-      }
-    }, ROOM_CLEANUP_RETRIES);
+    try {
+      await withRetries(async () => {
+        if (creds.isHost) {
+          await dissolveRoom(
+            bootstrapUrl.value,
+            creds.room.id,
+            creds.memberToken,
+            traffic,
+          );
+        } else {
+          await leaveRoom(
+            bootstrapUrl.value,
+            creds.room.id,
+            creds.memberToken,
+            traffic,
+          );
+        }
+      }, ROOM_CLEANUP_RETRIES);
+    } catch (e) {
+      // Seat already gone — treat as successful cleanup.
+      if (isFatalRoomError(e)) return;
+      throw e;
+    }
+  }
+
+  async function handleRoomGone(message: string) {
+    if (roomGoneHandling) return;
+    roomGoneHandling = true;
+    stopPolling();
+    stopMembersPolling();
+    try {
+      await withTimeout(
+        apiDisconnect(),
+        30_000,
+        "断开隧道超时，请稍后重试或重启应用",
+      );
+    } catch {
+      // best-effort local teardown
+    }
+    session.value = null;
+    members.value = [];
+    status.value = null;
+    clearPingState();
+    lastReportedKey.value = "";
+    lastPresenceAt.value = 0;
+    lastPresenceOk = false;
+    resetTrafficAccum();
+    pingFailUntil.clear();
+    phase.value = "idle";
+    error.value = message;
+    busyAction.value = false;
+    roomGoneHandling = false;
+    startLobbyPolling();
   }
 
   function currentTraffic(): TrafficReport {
@@ -322,10 +377,11 @@ export function useNetworkStatus() {
 
     const key = `${current.room.id}:${nodeId}:${virtualIp}`;
     const now = Date.now();
-    const freshEnough =
-      key === lastReportedKey.value &&
-      now - lastPresenceAt.value < PRESENCE_REFRESH_MS;
-    if (freshEnough) return;
+    const waitMs =
+      lastPresenceOk && key === lastReportedKey.value
+        ? PRESENCE_REFRESH_MS
+        : PRESENCE_RETRY_MS;
+    if (now - lastPresenceAt.value < waitMs) return;
 
     try {
       await reportPresence(bootstrapUrl.value, current.room.id, {
@@ -336,12 +392,19 @@ export function useNetworkStatus() {
       });
       lastReportedKey.value = key;
       lastPresenceAt.value = now;
-    } catch {
-      // presence is best-effort; members poll will stay without IP until retry
+      lastPresenceOk = true;
+    } catch (e) {
+      lastPresenceAt.value = now;
+      lastPresenceOk = false;
+      if (isFatalRoomError(e)) {
+        await handleRoomGone("房间已解散或已被移出");
+      }
     }
   }
 
   async function pullStatus() {
+    if (statusInFlight) return;
+    statusInFlight = true;
     try {
       const next = await apiGetStatus();
       status.value = next;
@@ -355,31 +418,48 @@ export function useNetworkStatus() {
       if (phase.value === "connected") {
         error.value = msg;
       }
+    } finally {
+      statusInFlight = false;
     }
   }
 
   async function pullPings() {
+    if (pingInFlight) return;
     const current = session.value;
     if (!current || phase.value !== "connected") return;
 
+    const now = Date.now();
     const targets = members.value.filter(
       (m) =>
         m.id !== current.memberId &&
         !!m.virtualIp &&
-        m.virtualIp.trim().length > 0,
+        m.virtualIp.trim().length > 0 &&
+        (pingFailUntil.get(m.id) ?? 0) <= now,
     );
+    if (targets.length === 0) return;
 
-    await Promise.all(
-      targets.map(async (member) => {
-        const ip = member.virtualIp!.trim();
-        try {
-          const ms = await apiPingPeer(ip);
-          setPingSuccess(member.id, ms);
-        } catch (e) {
-          setPingFailure(member.id, formatPingError(e));
-        }
-      }),
-    );
+    pingInFlight = true;
+    try {
+      for (let i = 0; i < targets.length; i += PING_CONCURRENCY) {
+        if (phase.value !== "connected" || !session.value) break;
+        const batch = targets.slice(i, i + PING_CONCURRENCY);
+        await Promise.all(
+          batch.map(async (member) => {
+            const ip = member.virtualIp!.trim();
+            try {
+              const ms = await apiPingPeer(ip);
+              pingFailUntil.delete(member.id);
+              setPingSuccess(member.id, ms);
+            } catch (e) {
+              pingFailUntil.set(member.id, Date.now() + PING_FAIL_BACKOFF_MS);
+              setPingFailure(member.id, formatPingError(e));
+            }
+          }),
+        );
+      }
+    } finally {
+      pingInFlight = false;
+    }
   }
 
   async function testPeer(memberId: string): Promise<PeerTestResult> {
@@ -423,10 +503,18 @@ export function useNetworkStatus() {
 
   async function refreshRooms() {
     if (!bootstrapUrl.value || session.value) return;
+    if (lobbyInFlight) return;
+    if (Date.now() < lobbyBackoffUntil) return;
+    lobbyInFlight = true;
     try {
       rooms.value = await listRooms(bootstrapUrl.value);
-    } catch {
+    } catch (e) {
+      if (isRateLimitedError(e)) {
+        lobbyBackoffUntil = Date.now() + RATE_LIMIT_BACKOFF_MS;
+      }
       // lobby refresh failures are non-fatal
+    } finally {
+      lobbyInFlight = false;
     }
   }
 
@@ -438,12 +526,38 @@ export function useNetworkStatus() {
 
   async function refreshMembers() {
     if (!bootstrapUrl.value || !session.value) return;
+    if (membersInFlight) return;
+    if (Date.now() < membersBackoffUntil) return;
+
+    const current = session.value;
+    const roomId = current.room.id;
+    const token = current.memberToken;
+    membersInFlight = true;
     try {
-      const data = await listMembers(bootstrapUrl.value, session.value.room.id);
-      members.value = data.members;
-      session.value = { ...session.value, room: data.room };
-    } catch {
-      // room may have been dissolved
+      const data = await listMembers(bootstrapUrl.value, roomId, token);
+      const still = session.value;
+      if (!still || still.room.id !== roomId) return;
+      members.value = data.members ?? [];
+      session.value = { ...still, room: data.room };
+      // Detect self purged by server while UI still thinks we are in-room.
+      if (
+        still.memberId &&
+        data.members &&
+        !data.members.some((m) => m.id === still.memberId)
+      ) {
+        await handleRoomGone("你已不在房间内（可能超时被移出）");
+      }
+    } catch (e) {
+      if (isFatalRoomError(e)) {
+        await handleRoomGone("房间已解散或已被移出");
+        return;
+      }
+      if (isRateLimitedError(e)) {
+        membersBackoffUntil = Date.now() + RATE_LIMIT_BACKOFF_MS;
+      }
+      // transient failures are non-fatal
+    } finally {
+      membersInFlight = false;
     }
   }
 
@@ -462,8 +576,11 @@ export function useNetworkStatus() {
     error.value = null;
     lastReportedKey.value = "";
     lastPresenceAt.value = 0;
+    lastPresenceOk = false;
     clearPingState();
     resetTrafficAccum();
+    pingFailUntil.clear();
+    membersBackoffUntil = 0;
     stopLobbyPolling();
     try {
       await withTimeout(
@@ -498,6 +615,7 @@ export function useNetworkStatus() {
       members.value = [];
       lastReportedKey.value = "";
       lastPresenceAt.value = 0;
+      lastPresenceOk = false;
       resetTrafficAccum();
       stopMembersPolling();
       startLobbyPolling();
@@ -630,14 +748,8 @@ export function useNetworkStatus() {
       }
     } catch (e) {
       roomErr = e instanceof Error ? e.message : String(e);
-      if (!opts?.force) {
-        error.value = `退出房间失败（房间可能仍留在列表）: ${roomErr}`;
-        phase.value = "connected";
-        busyAction.value = false;
-        startPolling();
-        startMembersPolling();
-        return;
-      }
+      // Never bounce back to connected — continue disconnecting and return to lobby.
+      // Server stale cleanup will reclaim the seat if the API call did not land.
     }
 
     try {
@@ -648,14 +760,16 @@ export function useNetworkStatus() {
       );
     } catch (e) {
       if (!opts?.force) {
-        // Room seat already cleared; drop local session so UI is not stuck in transit.
+        // Room seat already cleared (or best-effort); drop local session so UI is not stuck.
         session.value = null;
         members.value = [];
         status.value = null;
         clearPingState();
         lastReportedKey.value = "";
         lastPresenceAt.value = 0;
+        lastPresenceOk = false;
         resetTrafficAccum();
+        pingFailUntil.clear();
         phase.value = "error";
         error.value = e instanceof Error ? e.message : String(e);
         busyAction.value = false;
@@ -670,10 +784,12 @@ export function useNetworkStatus() {
     clearPingState();
     lastReportedKey.value = "";
     lastPresenceAt.value = 0;
+    lastPresenceOk = false;
     resetTrafficAccum();
+    pingFailUntil.clear();
     phase.value = "idle";
     error.value = roomErr
-      ? `已断开，但房间清理失败（可能仍在列表）: ${roomErr}`
+      ? `已断开，但房间清理失败（席位稍后会自动过期）: ${roomErr}`
       : null;
     busyAction.value = false;
     startLobbyPolling();

@@ -85,6 +85,7 @@ class PurgedRoom:
     id: str
     name: str
     traffic: RoomTrafficSnapshot | None = None
+    node_ids: list[tuple[str | None, str | None]] | None = None
 
 
 @dataclass
@@ -314,12 +315,24 @@ class Database:
             ).fetchall()
             purged: list[PurgedRoom] = []
             for r in rows:
+                member_rows = conn.execute(
+                    "SELECT node_id, virtual_ip FROM members WHERE room_id = ?",
+                    (r["id"],),
+                ).fetchall()
+                node_ids = [
+                    (row["node_id"], row["virtual_ip"]) for row in member_rows
+                ]
                 snap = _snapshot_traffic(
                     conn, r["id"], reason="expired", closed_at=now
                 )
                 conn.execute("DELETE FROM rooms WHERE id = ?", (r["id"],))
                 purged.append(
-                    PurgedRoom(id=r["id"], name=r["name"], traffic=snap)
+                    PurgedRoom(
+                        id=r["id"],
+                        name=r["name"],
+                        traffic=snap,
+                        node_ids=node_ids,
+                    )
                 )
         for room in purged:
             log_event("room.expired", room_id=room.id, name=room.name)
@@ -355,12 +368,24 @@ class Database:
             ).fetchall()
             purged: list[PurgedRoom] = []
             for r in rows:
+                member_rows = conn.execute(
+                    "SELECT node_id, virtual_ip FROM members WHERE room_id = ?",
+                    (r["id"],),
+                ).fetchall()
+                node_ids = [
+                    (row["node_id"], row["virtual_ip"]) for row in member_rows
+                ]
                 snap = _snapshot_traffic(
                     conn, r["id"], reason="stale_host", closed_at=now
                 )
                 conn.execute("DELETE FROM rooms WHERE id = ?", (r["id"],))
                 purged.append(
-                    PurgedRoom(id=r["id"], name=r["name"], traffic=snap)
+                    PurgedRoom(
+                        id=r["id"],
+                        name=r["name"],
+                        traffic=snap,
+                        node_ids=node_ids,
+                    )
                 )
         for room in purged:
             log_event("room.stale_host", room_id=room.id, name=room.name)
@@ -662,6 +687,16 @@ class Database:
             return None
         return _member_from_row(r)
 
+    def require_member(self, room_id: str, member_token: str) -> Member:
+        """Return member or raise LookupError (room gone) / PermissionError (bad token)."""
+        room = self.get_room(room_id)
+        if not room:
+            raise LookupError("房间不存在或已解散")
+        member = self.member_by_token(room_id, member_token)
+        if not member:
+            raise PermissionError("无效的成员凭证")
+        return member
+
     def update_presence(
         self,
         room_id: str,
@@ -674,12 +709,7 @@ class Database:
         egress_ip: str | None = None,
         geo_label: str | None = None,
     ) -> PresenceResult:
-        member = self.member_by_token(room_id, member_token)
-        if not member:
-            raise PermissionError("无效的成员凭证")
-        room = self.get_room(room_id)
-        if not room:
-            raise LookupError("房间不存在或已过期")
+        member = self.require_member(room_id, member_token)
         first_presence = member.presence_at is None
         now = _now()
         relay = max(member.relay_bytes, _clamp_bytes(relay_bytes))
@@ -735,9 +765,7 @@ class Database:
         relay_bytes: int | None = None,
         p2p_bytes: int | None = None,
     ) -> Member:
-        member = self.member_by_token(room_id, member_token)
-        if not member:
-            raise PermissionError("无效的成员凭证")
+        member = self.require_member(room_id, member_token)
         relay = max(member.relay_bytes, _clamp_bytes(relay_bytes))
         p2p = max(member.p2p_bytes, _clamp_bytes(p2p_bytes))
         with self.connect() as conn:
@@ -759,10 +787,16 @@ class Database:
         member_token: str,
         relay_bytes: int | None = None,
         p2p_bytes: int | None = None,
-    ) -> LeaveResult:
-        member = self.member_by_token(room_id, member_token)
-        if not member:
-            raise PermissionError("无效的成员凭证")
+    ) -> LeaveResult | DissolveResult:
+        member = self.require_member(room_id, member_token)
+        # Host leave would leave a host-less zombie room; treat as dissolve.
+        if member.is_host:
+            return self.dissolve(
+                room_id,
+                member_token,
+                relay_bytes=relay_bytes,
+                p2p_bytes=p2p_bytes,
+            )
         if relay_bytes is not None or p2p_bytes is not None:
             self.update_member_traffic(
                 room_id, member_token, relay_bytes, p2p_bytes
@@ -811,9 +845,7 @@ class Database:
         relay_bytes: int | None = None,
         p2p_bytes: int | None = None,
     ) -> DissolveResult:
-        member = self.member_by_token(room_id, member_token)
-        if not member:
-            raise PermissionError("无效的成员凭证")
+        member = self.require_member(room_id, member_token)
         if not member.is_host:
             raise PermissionError("仅房主可解散房间")
         if relay_bytes is not None or p2p_bytes is not None:
